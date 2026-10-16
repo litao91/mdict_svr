@@ -338,22 +338,37 @@ mdict_svr <COMMAND>
 
 ### `import`
 
-Read an MDict file and pack it into a `.qmd` container.
+Read MDict file(s) and pack them into `.qmd` container(s). `--mdx` may be a
+single file **or a directory** to scan recursively.
 
 ```
-mdict_svr import --mdx <FILE> [-o <OUT>] [--mdd <FILE>] [--res-out <OUT>]
+mdict_svr import --mdx <FILE|DIR> [-o <OUT|OUTDIR>] [--mdd <FILE>] [--res-out <OUT>]
 ```
 
 | Flag | Required | Description |
 | --- | --- | --- |
-| `--mdx <FILE>` | yes | Source word dictionary. |
-| `-o, --out <FILE>` | yes | Output `.qmd` for the words. |
-| `--mdd <FILE>` | no | Companion resource file to import too. |
-| `--res-out <FILE>` | no | Output `.qmd` for resources. Defaults to `<out stem>.res.qmd`. Giving `--res-out` without `--mdd` is an error. |
+| `--mdx <path>` | yes | A `.mdx` file, or a directory scanned recursively for every `.mdx`/`.mdd`. |
+| `-o, --out <path>` | no | Single-file mode: output `.qmd` (default `<source stem>.qmd` beside the source). Directory mode: output **directory** (default the input directory), mirroring source subpaths. |
+| `--mdd <FILE>` | no | Companion resource file. **Single-file mode only.** |
+| `--res-out <FILE>` | no | Resource output (default `<out stem>.res.qmd`). **Single-file mode only.** Giving it without `--mdd` is an error. |
+
+**Directory mode.** Every `*.mdx`/`*.mdd` under the directory is imported, so you
+can convert a folder of dictionaries in one go:
+
+- `X.mdx` → `X.qmd` (a word dictionary).
+- a sibling `X.mdd` (same directory and stem, matched case-insensitively) →
+  `X.res.qmd`, attached as `X`'s resources.
+- a lone `X.mdd` with no matching `.mdx` → `X.res.qmd` (resource-only).
+
+Output paths mirror the source subpaths under the output directory (so
+`sub/x.mdx` → `<outdir>/sub/x.qmd`), and parent directories are created as
+needed. This naming is exactly what [`serve --db <dir>`](#serve) discovers, so you
+can import a directory and serve the result directly. `--mdd`/`--res-out` are
+rejected in directory mode (pairing is automatic).
 
 Records are streamed, so a multi-hundred-MB `.mdd` imports without loading it all
 into RAM. Prints the detected version/encoding/encryption and the resulting
-counts, e.g.:
+counts for each file, e.g.:
 
 ```
 imported dictionary: title="牛津小学生英汉双解词典" version=2 encoding=Utf8 encrypted=2 entries=4279 -> keys=4275 slots=4279 text_bytes=5944800

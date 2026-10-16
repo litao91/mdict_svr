@@ -40,16 +40,24 @@ cargo build --release
 ## Import
 
 ```bash
-# words only
+# a single dictionary (words only); -o is optional (defaults to <source>.qmd)
 mdict_svr import --mdx oxfordPrimary.mdx -o dict.qmd
 
 # words + resources (images/css/js referenced by the HTML)
 mdict_svr import --mdx oxfordPrimary.mdx --mdd oxfordPrimary.mdd \
     -o dict.qmd --res-out res.qmd
+
+# a whole directory: recursively import every .mdx/.mdd under it.
+# X.mdx -> X.qmd, sibling X.mdd -> X.res.qmd, mirroring subpaths.
+# -o is the output directory (defaults to the input directory).
+mdict_svr import --mdx /path/to/dicts -o /var/lib/mdict
 ```
 
 `import` streams records, so a multi-hundred-MB `.mdd` imports without loading it
-all into RAM. Resource output defaults to `<out stem>.res.qmd`.
+all into RAM. In single-file mode the resource output defaults to
+`<out stem>.res.qmd`; `--mdd`/`--res-out` are single-file only (directory mode
+pairs `.mdx`/`.mdd` by name automatically). The output naming matches what
+`serve --db <dir>` discovers, so you can import a directory and serve it directly.
 
 ## Look up offline
 

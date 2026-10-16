@@ -25,16 +25,19 @@ struct Cli {
 enum Command {
     /// Import a .mdx (and optional .mdd resources) into packed .qmd database(s)
     Import {
-        /// Source word dictionary (.mdx)
+        /// Source: a .mdx file, or a directory to scan recursively for every
+        /// .mdx/.mdd (each X.mdx → X.qmd, its sibling X.mdd → X.res.qmd).
         #[arg(long)]
         mdx: PathBuf,
-        /// Optional companion resource file (.mdd)
+        /// Companion resource file (.mdd). Single-file mode only.
         #[arg(long)]
         mdd: Option<PathBuf>,
-        /// Output database for the words
+        /// Output .qmd (single-file mode; default: alongside the source). In
+        /// directory mode this is the output directory (default: the input dir),
+        /// mirroring the source subpaths.
         #[arg(short = 'o', long = "out")]
-        out: PathBuf,
-        /// Output database for resources (default: <out stem>.res.qmd)
+        out: Option<PathBuf>,
+        /// Output for resources (default: <out stem>.res.qmd). Single-file mode only.
         #[arg(long = "res-out")]
         res_out: Option<PathBuf>,
     },
@@ -100,17 +103,144 @@ async fn main() -> Result<()> {
 async fn cmd_import(
     mdx: PathBuf,
     mdd: Option<PathBuf>,
-    out: PathBuf,
+    out: Option<PathBuf>,
     res_out: Option<PathBuf>,
 ) -> Result<()> {
-    let dict_mdx = mdx.clone();
-    let dict_out = out.clone();
-    let report = tokio::task::spawn_blocking(move || {
-        build::import_dictionary(&dict_mdx, &dict_out)
-    })
-    .await?
-    .with_context(|| format!("importing {}", mdx.display()))?;
+    if mdx.is_dir() {
+        if mdd.is_some() || res_out.is_some() {
+            bail!("--mdd/--res-out are for single-file import; omit them when --mdx is a directory");
+        }
+        let outdir = out.unwrap_or_else(|| mdx.clone());
+        return import_dir(&mdx, &outdir).await;
+    }
 
+    // Single file: default output is alongside the source, with a .qmd extension.
+    let out = out.unwrap_or_else(|| mdx.with_extension("qmd"));
+    import_one_dict(&mdx, &out).await?;
+    if let Some(mdd) = mdd {
+        let res_out = res_out.unwrap_or_else(|| default_res_path(&out));
+        import_one_res(&mdd, &res_out).await?;
+    } else if res_out.is_some() {
+        bail!("--res-out given without --mdd");
+    }
+    Ok(())
+}
+
+/// Import every `.mdx`/`.mdd` under `root`, writing `.qmd` files under `outdir`
+/// and mirroring the source subpaths: `X.mdx` → `X.qmd`, a sibling `X.mdd` →
+/// `X.res.qmd`, and a lone `X.mdd` → `X.res.qmd`.
+async fn import_dir(root: &Path, outdir: &Path) -> Result<()> {
+    let mut files: Vec<PathBuf> = Vec::new();
+    collect_dict_files(root, &mut files)?;
+    files.sort();
+    if files.is_empty() {
+        bail!("no .mdx/.mdd files found under {}", root.display());
+    }
+
+    // Index .mdd files by (parent dir, lowercase stem) to pair with a sibling .mdx.
+    let mut mdd_by_stem: std::collections::HashMap<(PathBuf, String), PathBuf> =
+        std::collections::HashMap::new();
+    for f in &files {
+        if eq_ext(f, "mdd") {
+            if let (Some(parent), Some(stem)) = (f.parent(), f.file_stem()) {
+                mdd_by_stem.insert(
+                    (parent.to_path_buf(), stem.to_string_lossy().to_lowercase()),
+                    f.clone(),
+                );
+            }
+        }
+    }
+
+    let mut paired_mdd: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let mut count = 0usize;
+
+    for f in &files {
+        if !eq_ext(f, "mdx") {
+            continue;
+        }
+        let out = out_path(root, outdir, f, "qmd");
+        ensure_parent(&out)?;
+        import_one_dict(f, &out).await?;
+        count += 1;
+
+        if let (Some(parent), Some(stem)) = (f.parent(), f.file_stem()) {
+            let key = (parent.to_path_buf(), stem.to_string_lossy().to_lowercase());
+            if let Some(mdd) = mdd_by_stem.get(&key) {
+                let res_out = out_path(root, outdir, mdd, "res.qmd");
+                ensure_parent(&res_out)?;
+                import_one_res(mdd, &res_out).await?;
+                paired_mdd.insert(mdd.clone());
+            }
+        }
+    }
+
+    // Lone .mdd files: resources with no matching word dictionary.
+    for f in &files {
+        if eq_ext(f, "mdd") && !paired_mdd.contains(f) {
+            let res_out = out_path(root, outdir, f, "res.qmd");
+            ensure_parent(&res_out)?;
+            import_one_res(f, &res_out).await?;
+            count += 1;
+        }
+    }
+
+    println!(
+        "imported {count} dictionar{} from {} into {}",
+        if count == 1 { "y" } else { "ies" },
+        root.display(),
+        outdir.display()
+    );
+    Ok(())
+}
+
+/// Recursively collect `*.mdx` and `*.mdd` under `dir`.
+fn collect_dict_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            collect_dict_files(&path, out)?;
+        } else if eq_ext(&path, "mdx") || eq_ext(&path, "mdd") {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// Case-insensitive file-extension check.
+fn eq_ext(path: &Path, ext: &str) -> bool {
+    path.extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.eq_ignore_ascii_case(ext))
+        .unwrap_or(false)
+}
+
+/// Map a source file under `root` to its output path under `outdir`, replacing
+/// the extension with `new_ext` (`"qmd"` or `"res.qmd"`) and preserving subpaths.
+fn out_path(root: &Path, outdir: &Path, src: &Path, new_ext: &str) -> PathBuf {
+    let rel = src.strip_prefix(root).unwrap_or(src);
+    let stem = rel
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let parent = rel.parent().unwrap_or(Path::new(""));
+    outdir.join(parent).join(format!("{stem}.{new_ext}"))
+}
+
+fn ensure_parent(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    Ok(())
+}
+
+async fn import_one_dict(mdx: &Path, out: &Path) -> Result<()> {
+    let m = mdx.to_path_buf();
+    let o = out.to_path_buf();
+    let report = tokio::task::spawn_blocking(move || build::import_dictionary(&m, &o))
+        .await?
+        .with_context(|| format!("importing {}", mdx.display()))?;
     println!(
         "imported dictionary: title={:?} version={} encoding={} encrypted={} entries={} \
          -> keys={} slots={} text_bytes={}",
@@ -124,34 +254,28 @@ async fn cmd_import(
         report.stats.text_bytes,
     );
     println!("wrote {}", out.display());
-
-    if let Some(mdd) = mdd {
-        let res_out = res_out.unwrap_or_else(|| default_res_path(&out));
-        let r_mdd = mdd.clone();
-        let r_out = res_out.clone();
-        let rreport = tokio::task::spawn_blocking(move || {
-            build::import_resources(&r_mdd, &r_out)
-        })
-        .await?
-        .with_context(|| format!("importing {}", mdd.display()))?;
-        println!(
-            "imported resources: entries={} -> keys={} slots={} text_bytes={}",
-            rreport.entries, rreport.stats.num_keys, rreport.stats.num_slots, rreport.stats.text_bytes
-        );
-        println!("wrote {}", res_out.display());
-    } else if res_out.is_some() {
-        bail!("--res-out given without --mdd");
-    }
     Ok(())
 }
 
-fn default_res_path(out: &PathBuf) -> PathBuf {
-    let mut p = out.clone();
-    let stem = out.file_stem().map(|s| s.to_string_lossy().into_owned());
-    if let Some(stem) = stem {
-        p.set_file_name(format!("{stem}.res.qmd"));
+async fn import_one_res(mdd: &Path, res_out: &Path) -> Result<()> {
+    let m = mdd.to_path_buf();
+    let o = res_out.to_path_buf();
+    let report = tokio::task::spawn_blocking(move || build::import_resources(&m, &o))
+        .await?
+        .with_context(|| format!("importing {}", mdd.display()))?;
+    println!(
+        "imported resources: entries={} -> keys={} slots={} text_bytes={}",
+        report.entries, report.stats.num_keys, report.stats.num_slots, report.stats.text_bytes
+    );
+    println!("wrote {}", res_out.display());
+    Ok(())
+}
+
+fn default_res_path(out: &Path) -> PathBuf {
+    match out.file_stem() {
+        Some(stem) => out.with_file_name(format!("{}.res.qmd", stem.to_string_lossy())),
+        None => out.with_extension("res.qmd"),
     }
-    p
 }
 
 fn cmd_lookup(word: String, db: PathBuf, format: String) -> Result<()> {
