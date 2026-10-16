@@ -1,6 +1,7 @@
-//! HTTP API (axum): look up a word and return its definition as HTML or
-//! Markdown, plus resource and metadata endpoints.
+//! HTTP API (axum): serve lookups across one or more dictionaries, returning
+//! definitions as HTML or Markdown, plus per-dictionary resources and metadata.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::{
@@ -16,25 +17,59 @@ use serde_json::json;
 use crate::lookup::Dict;
 use crate::md::html_to_markdown;
 
-/// Shared server state: the word dictionary and (optionally) the resource store.
-pub struct AppState {
+/// One loaded dictionary plus its optional resource store.
+pub struct DictEntry {
+    pub name: String,
     pub dict: Arc<Dict>,
     pub res: Option<Arc<Dict>>,
+}
+
+/// A named collection of dictionaries. Lookups without an explicit `dict` search
+/// all of them in registration order.
+pub struct Registry {
+    pub entries: Vec<DictEntry>,
+    by_name: HashMap<String, usize>,
+}
+
+impl Registry {
+    pub fn new(entries: Vec<DictEntry>) -> Registry {
+        let mut by_name = HashMap::new();
+        for (i, e) in entries.iter().enumerate() {
+            by_name.entry(e.name.clone()).or_insert(i);
+        }
+        Registry { entries, by_name }
+    }
+
+    pub fn get(&self, name: &str) -> Option<&DictEntry> {
+        self.by_name.get(name).map(|&i| &self.entries[i])
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// Shared server state.
+pub struct AppState {
+    pub registry: Arc<Registry>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct LookupParams {
     pub word: Option<String>,
     pub format: Option<String>,
+    /// Restrict the lookup to one dictionary by name; omit to search all.
+    pub dict: Option<String>,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/info", get(info))
+        .route("/dicts", get(dicts))
         .route("/lookup", get(lookup))
         .route("/word/{word}", get(lookup_path))
-        .route("/res/{*path}", get(resource))
+        .route("/res/{dict}/{*path}", get(resource))
         .with_state(state)
 }
 
@@ -42,9 +77,10 @@ async fn health() -> &'static str {
     "ok"
 }
 
-async fn info(State(st): State<Arc<AppState>>) -> Response {
-    let m = st.dict.meta();
-    Json(json!({
+fn dict_json(e: &DictEntry) -> serde_json::Value {
+    let m = e.dict.meta();
+    json!({
+        "name": e.name,
         "title": m.title,
         "description": m.description,
         "creation_date": m.creation_date,
@@ -52,9 +88,17 @@ async fn info(State(st): State<Arc<AppState>>) -> Response {
         "entries": m.num_keys,
         "records": m.num_slots,
         "case_sensitive": m.case_sensitive,
-        "resources": st.res.as_ref().map(|r| r.num_keys()).unwrap_or(0),
-    }))
-    .into_response()
+        "has_resources": e.res.is_some(),
+    })
+}
+
+async fn dicts(State(st): State<Arc<AppState>>) -> Response {
+    let list: Vec<_> = st.registry.entries.iter().map(dict_json).collect();
+    Json(json!({ "dictionaries": list })).into_response()
+}
+
+async fn info(State(st): State<Arc<AppState>>) -> Response {
+    dicts(State(st)).await
 }
 
 /// Decide HTML vs Markdown from the `format` param, falling back to `Accept`.
@@ -72,38 +116,110 @@ fn want_markdown(fmt: Option<&str>, headers: &HeaderMap) -> bool {
     false
 }
 
-async fn respond_definition(st: &Arc<AppState>, word: &str, markdown: bool) -> Response {
-    // Build the owned HTML first so no borrow of the mmap is held across an await.
-    let html = {
-        let records = st.dict.lookup_word(word);
+/// Collect the raw HTML for `word` from the selected dictionary (or all of them).
+/// Returns `(dict_name, html)` pairs in registry order.
+fn gather_html(st: &AppState, word: &str, dict: Option<&str>) -> Result<Vec<(String, String)>, Response> {
+    let entries: Vec<&DictEntry> = match dict {
+        Some(name) => match st.registry.get(name) {
+            Some(e) => vec![e],
+            None => {
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    Json(json!({ "error": "unknown dictionary", "dict": name })),
+                )
+                    .into_response())
+            }
+        },
+        None => st.registry.entries.iter().collect(),
+    };
+
+    let mut out = Vec::new();
+    for e in entries {
+        let records = e.dict.lookup_word(word);
         if records.is_empty() {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({ "error": "not found", "word": word })),
-            )
-                .into_response();
+            continue;
         }
-        records
+        let html = records
             .iter()
             .map(|b| String::from_utf8_lossy(b))
             .collect::<Vec<_>>()
-            .join("\n<hr/>\n")
+            .join("\n<hr/>\n");
+        out.push((e.name.clone(), html));
+    }
+    Ok(out)
+}
+
+async fn respond_definition(st: &Arc<AppState>, word: &str, dict: Option<&str>, markdown: bool) -> Response {
+    let matches = match gather_html(st, word, dict) {
+        Ok(m) => m,
+        Err(resp) => return resp,
     };
+    if matches.is_empty() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "not found", "word": word })),
+        )
+            .into_response();
+    }
+
+    let xdict = matches
+        .iter()
+        .map(|(n, _)| n.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    let xdict_header = header::HeaderName::from_static("x-dictionary");
+    let multi = matches.len() > 1;
 
     if markdown {
-        let source = html.clone();
-        let body = tokio::task::spawn_blocking(move || html_to_markdown(&source))
-            .await
-            .unwrap_or(html);
+        // Convert each dictionary's HTML off the async worker, then combine.
+        let htmls: Vec<String> = matches.iter().map(|(_, h)| h.clone()).collect();
+        let mds = tokio::task::spawn_blocking(move || {
+            htmls
+                .iter()
+                .map(|h| html_to_markdown(h))
+                .collect::<Vec<String>>()
+        })
+        .await
+        .unwrap_or_else(|_| matches.iter().map(|(_, h)| h.clone()).collect());
+
+        let body = if multi {
+            matches
+                .iter()
+                .zip(mds.iter())
+                .map(|((name, _), md)| format!("## {name}\n\n{md}"))
+                .collect::<Vec<_>>()
+                .join("\n\n---\n\n")
+        } else {
+            mds.into_iter().next().unwrap_or_default()
+        };
         (
-            [(header::CONTENT_TYPE, "text/markdown; charset=utf-8")],
+            [
+                (header::CONTENT_TYPE, "text/markdown; charset=utf-8"),
+                (xdict_header, xdict.as_str()),
+            ],
             body,
         )
             .into_response()
     } else {
+        let body = if multi {
+            matches
+                .iter()
+                .map(|(name, html)| {
+                    format!(
+                        "<section class=\"dict\" data-dict=\"{name}\"><h3>{name}</h3>{html}</section>"
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n<hr/>\n")
+        } else {
+            matches.into_iter().next().map(|(_, h)| h).unwrap_or_default()
+        };
         (
-            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-            html,
+            [
+                (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                (xdict_header, xdict.as_str()),
+            ],
+            body,
         )
             .into_response()
     }
@@ -114,6 +230,9 @@ async fn lookup(
     Query(q): Query<LookupParams>,
     headers: HeaderMap,
 ) -> Response {
+    if st.registry.is_empty() {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"no dictionaries loaded"}))).into_response();
+    }
     let word = match q.word {
         Some(w) if !w.trim().is_empty() => w,
         _ => {
@@ -125,7 +244,7 @@ async fn lookup(
         }
     };
     let markdown = want_markdown(q.format.as_deref(), &headers);
-    respond_definition(&st, &word, markdown).await
+    respond_definition(&st, &word, q.dict.as_deref(), markdown).await
 }
 
 async fn lookup_path(
@@ -134,17 +253,33 @@ async fn lookup_path(
     Query(q): Query<LookupParams>,
     headers: HeaderMap,
 ) -> Response {
+    if st.registry.is_empty() {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"no dictionaries loaded"}))).into_response();
+    }
     let markdown = want_markdown(q.format.as_deref(), &headers);
-    respond_definition(&st, &word, markdown).await
+    respond_definition(&st, &word, q.dict.as_deref(), markdown).await
 }
 
-async fn resource(State(st): State<Arc<AppState>>, Path(path): Path<String>) -> Response {
-    let res = match &st.res {
+async fn resource(
+    State(st): State<Arc<AppState>>,
+    Path((dict, path)): Path<(String, String)>,
+) -> Response {
+    let entry = match st.registry.get(&dict) {
+        Some(e) => e,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "unknown dictionary", "dict": dict })),
+            )
+                .into_response()
+        }
+    };
+    let res = match &entry.res {
         Some(r) => r,
         None => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(json!({ "error": "no resource dictionary loaded" })),
+                Json(json!({ "error": "dictionary has no resources", "dict": dict })),
             )
                 .into_response()
         }
@@ -152,15 +287,11 @@ async fn resource(State(st): State<Arc<AppState>>, Path(path): Path<String>) -> 
     match res.lookup_resource(&path) {
         Some(bytes) => {
             let mime = mime_guess::from_path(&path).first_or_octet_stream();
-            (
-                [(header::CONTENT_TYPE, mime.as_ref())],
-                bytes.to_vec(),
-            )
-                .into_response()
+            ([(header::CONTENT_TYPE, mime.as_ref())], bytes.to_vec()).into_response()
         }
         None => (
             StatusCode::NOT_FOUND,
-            Json(json!({ "error": "resource not found", "path": path })),
+            Json(json!({ "error": "resource not found", "dict": dict, "path": path })),
         )
             .into_response(),
     }

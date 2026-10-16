@@ -8,7 +8,7 @@ use serde_json::json;
 use mdict_svr::build;
 use mdict_svr::lookup::Dict;
 use mdict_svr::md::html_to_markdown;
-use mdict_svr::server::{router, AppState};
+use mdict_svr::server::{router, AppState, DictEntry, Registry};
 
 #[derive(Parser)]
 #[command(
@@ -49,14 +49,16 @@ enum Command {
         #[arg(long, default_value = "html")]
         format: String,
     },
-    /// Serve lookups over HTTP
+    /// Serve lookups over HTTP (one or more dictionaries)
     Serve {
-        /// Packed word database (.qmd)
-        #[arg(long)]
-        db: PathBuf,
-        /// Optional packed resource database (.qmd) for /res
-        #[arg(long)]
-        res: Option<PathBuf>,
+        /// Dictionary to serve, as `NAME=PATH` or `PATH` (name defaults to the
+        /// file stem). Repeatable to serve several dictionaries.
+        #[arg(long = "db", required = true)]
+        db: Vec<String>,
+        /// Resource database, as `NAME=PATH` (attached to dictionary NAME) or
+        /// `PATH` (attached to the sole dictionary). Repeatable.
+        #[arg(long = "res")]
+        res: Vec<String>,
         /// Socket address to bind
         #[arg(long, default_value = "127.0.0.1:8080")]
         addr: String,
@@ -88,8 +90,7 @@ async fn main() -> Result<()> {
             res_out,
         } => cmd_import(mdx, mdd, out, res_out).await,
         Command::Lookup { word, db, format } => cmd_lookup(word, db, format),
-        Command::Serve { db, res, addr } => cmd_serve(db, res, addr).await,
-        Command::Info { db } => cmd_info(db),
+        Command::Serve { db, res, addr } => cmd_serve(db, res, addr).await,        Command::Info { db } => cmd_info(db),
     }
 }
 
@@ -191,25 +192,76 @@ fn cmd_info(db: PathBuf) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_serve(db: PathBuf, res: Option<PathBuf>, addr: String) -> Result<()> {
-    let dict = Arc::new(Dict::open(&db).with_context(|| format!("opening {}", db.display()))?);
-    let res = match res {
-        Some(p) => Some(Arc::new(
-            Dict::open(&p).with_context(|| format!("opening {}", p.display()))?,
-        )),
-        None => None,
-    };
-    let meta = dict.meta();
-    let state = Arc::new(AppState { dict, res });
+/// Parse a `NAME=PATH` or bare `PATH` spec. For a bare path the name defaults to
+/// the file stem (without extension).
+fn parse_spec(spec: &str) -> (String, PathBuf) {
+    match spec.split_once('=') {
+        Some((name, path)) if !name.trim().is_empty() => (name.trim().to_string(), PathBuf::from(path)),
+        _ => {
+            let path = PathBuf::from(spec);
+            let name = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| spec.to_string());
+            (name, path)
+        }
+    }
+}
+
+async fn cmd_serve(db: Vec<String>, res: Vec<String>, addr: String) -> Result<()> {
+    // Load every word dictionary.
+    let mut entries: Vec<DictEntry> = Vec::with_capacity(db.len());
+    for spec in &db {
+        let (name, path) = parse_spec(spec);
+        if entries.iter().any(|e| e.name == name) {
+            bail!("duplicate dictionary name {name:?}");
+        }
+        let dict = Arc::new(
+            Dict::open(&path).with_context(|| format!("opening dictionary {name}: {}", path.display()))?,
+        );
+        println!("loaded dictionary {name:?} ({} entries) from {}", dict.num_keys(), path.display());
+        entries.push(DictEntry {
+            name,
+            dict,
+            res: None,
+        });
+    }
+    if entries.is_empty() {
+        bail!("no dictionaries given");
+    }
+
+    // Attach resource databases by name (or to the sole dictionary).
+    for spec in &res {
+        let (name, path) = parse_spec(spec);
+        let res_dict = Arc::new(
+            Dict::open(&path).with_context(|| format!("opening resources for {name}: {}", path.display()))?,
+        );
+        let target = if spec.contains('=') {
+            entries
+                .iter_mut()
+                .find(|e| e.name == name)
+                .with_context(|| format!("--res {name} matches no --db dictionary"))?
+        } else if entries.len() == 1 {
+            &mut entries[0]
+        } else {
+            bail!("--res {path:?} needs a NAME= prefix: multiple dictionaries loaded");
+        };
+        println!("attached resources to {:?} from {}", target.name, path.display());
+        target.res = Some(res_dict);
+    }
+
+    let total: usize = entries.len();
+    let state = Arc::new(AppState {
+        registry: Arc::new(Registry::new(entries)),
+    });
     let app = router(state);
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .with_context(|| format!("binding {addr}"))?;
     println!(
-        "serving {:?} ({} entries) on http://{}",
-        meta.title,
-        meta.num_keys,
+        "serving {total} dictionar{} on http://{}",
+        if total == 1 { "y" } else { "ies" },
         listener.local_addr()?
     );
     axum::serve(listener, app)

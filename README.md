@@ -58,29 +58,51 @@ mdict_svr lookup apple --db dict.qmd --format md
 
 ## Serve
 
+Serve one or more dictionaries. Each `--db` is `NAME=PATH` (or a bare `PATH`, in
+which case the name defaults to the file stem). Attach a resource store to a
+dictionary with `--res NAME=PATH`.
+
 ```bash
-mdict_svr serve --db dict.qmd --res res.qmd --addr 127.0.0.1:8080
+# a single dictionary
+mdict_svr serve --db dict.qmd --addr 127.0.0.1:8080
+
+# several dictionaries, each with its own resources
+mdict_svr serve \
+    --db oxford=dict.qmd     --res oxford=res.qmd \
+    --db collins=collins.qmd --res collins=collins.res.qmd \
+    --addr 127.0.0.1:8080
 ```
 
 ### HTTP API
 
-| Method & path                        | Description                                             |
-| ------------------------------------ | ------------------------------------------------------- |
-| `GET /lookup?word=<w>&format=html\|md` | Definition of `<w>`; `format` defaults to `html`          |
-| `GET /word/<w>?format=html\|md`        | Same, word in the path                                   |
-| `GET /res/<path>`                      | A resource from the `.mdd` (correct `Content-Type`)      |
-| `GET /info`                            | JSON metadata (title, entry/record counts)              |
-| `GET /health`                          | Liveness                                                |
+| Method & path                             | Description                                                       |
+| ----------------------------------------- | ----------------------------------------------------------------- |
+| `GET /lookup?word=<w>&dict=<name>&format=html\|md` | Definition of `<w>`. `dict` optional; `format` defaults to `html`. |
+| `GET /word/<w>?dict=<name>&format=html\|md`        | Same, word in the path.                                    |
+| `GET /res/<dict>/<path>`                  | A resource from that dictionary's `.mdd` (correct `Content-Type`)  |
+| `GET /dicts`                              | JSON list of loaded dictionaries and their metadata                |
+| `GET /info`                               | Alias for `/dicts`                                                 |
+| `GET /health`                             | Liveness                                                           |
 
-`format` may also be implied by `Accept: text/markdown`. Markdown is produced by
-converting the stored HTML at query time (in a blocking task), so the database
-keeps a single source of truth. A missing word returns `404` with a JSON body.
+When `dict` is omitted, **all** dictionaries are searched in the order they were
+given:
+
+* one match → that dictionary's definition is returned as-is;
+* several matches → they are concatenated, labeled per dictionary (`<section
+  data-dict="name">` in HTML, `## name` in Markdown).
+
+Either way the responding dictionary name(s) are in the `X-Dictionary` response
+header. `format` may also be implied by `Accept: text/markdown`. Markdown is
+produced by converting the stored HTML at query time (in a blocking task), so the
+database keeps a single source of truth. A missing word returns `404` JSON; an
+unknown `dict` returns `404` JSON.
 
 ```bash
-curl 'http://127.0.0.1:8080/lookup?word=apple&format=md'
-curl 'http://127.0.0.1:8080/lookup?word=apple'            # HTML
-curl -i 'http://127.0.0.1:8080/lookup?word=zzz'           # 404 JSON
-curl 'http://127.0.0.1:8080/info'
+curl 'http://127.0.0.1:8080/dicts'
+curl 'http://127.0.0.1:8080/lookup?word=apple&format=md'          # search all
+curl 'http://127.0.0.1:8080/lookup?word=apple&dict=oxford'        # one dict, HTML
+curl -i 'http://127.0.0.1:8080/lookup?word=zzz'                   # 404 JSON
+curl 'http://127.0.0.1:8080/res/oxford/xiaoxuesheng.css'          # a resource
 ```
 
 ## Tests
