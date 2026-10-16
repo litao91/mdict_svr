@@ -60,13 +60,18 @@ mdict_svr lookup apple --db dict.qmd --format md
 
 ## Serve
 
-Serve one or more dictionaries. Each `--db` is `NAME=PATH` (or a bare `PATH`, in
-which case the name defaults to the file stem). Attach a resource store to a
-dictionary with `--res NAME=PATH`.
+Serve one or more dictionaries. Each `--db` is `NAME=PATH`, a bare `PATH` to a
+`.qmd` (name defaults to the file stem), **or a directory** — a directory is
+scanned recursively and every `*.qmd` under it is served: `X.qmd` becomes a
+dictionary named `X`, and `X.res.qmd` is attached as its resource store. Attach
+resources explicitly with `--res NAME=PATH` (or a directory).
 
 ```bash
 # a single dictionary
 mdict_svr serve --db dict.qmd --addr 127.0.0.1:8080
+
+# every dictionary under a directory (words + their *.res.qmd resources)
+mdict_svr serve --db /var/lib/mdict --addr 127.0.0.1:8080
 
 # several dictionaries, each with its own resources
 mdict_svr serve \

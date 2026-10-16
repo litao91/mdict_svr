@@ -375,16 +375,33 @@ Exits `2` and prints `not found: <WORD>` to stderr when the word is absent.
 Run the HTTP server with one or more dictionaries.
 
 ```
-mdict_svr serve --db <NAME=PATH|PATH> [--db ...] [--res <NAME=PATH|PATH> ...] [--addr <ADDR>]
+mdict_svr serve --db <NAME=PATH|PATH|DIR> [--db ...] [--res <NAME=PATH|PATH|DIR> ...] [--addr <ADDR>]
 ```
 
 | Flag | Required | Description |
 | --- | --- | --- |
-| `--db <spec>` | yes (repeatable) | A dictionary. `NAME=PATH`, or bare `PATH` (name = file stem). |
-| `--res <spec>` | no (repeatable) | A resource store. `NAME=PATH` attaches to dictionary `NAME`; bare `PATH` attaches to the sole dictionary (ambiguous with several → error). |
+| `--db <spec>` | yes (repeatable) | A dictionary. `NAME=PATH`, a bare `PATH` to a `.qmd` (name = file stem), **or a directory** (scanned recursively for `*.qmd`). |
+| `--res <spec>` | no (repeatable) | A resource store. `NAME=PATH` attaches to dictionary `NAME`; a bare `PATH` attaches to the sole dictionary (ambiguous with several → error); a directory is scanned for `*.res.qmd`. |
 | `--addr <ADDR>` | no | Bind address, default `127.0.0.1:8080`. |
 
-Duplicate dictionary names are rejected. Shuts down cleanly on `Ctrl-C`.
+**Directory scanning.** When a `--db` (or `--res`) path is a directory it is
+walked recursively and every `*.qmd` is served, so you can point the server at a
+folder of dictionaries:
+
+- `X.qmd` → a word dictionary named `X` (the file stem).
+- `X.res.qmd` → the resource store for dictionary `X`, attached automatically.
+
+Names must be unique; if two files in different subdirectories share a stem, the
+second is named by its path relative to the scanned directory (separators → `-`).
+Discovered `*.res.qmd` with no matching dictionary are skipped with a warning;
+explicit `--res NAME=` that matches nothing is an error. Giving `NAME=<directory>`
+is rejected (a directory holds many dictionaries). Duplicate names across specs
+are rejected. Shuts down cleanly on `Ctrl-C`.
+
+```bash
+# serve everything under a directory
+mdict_svr serve --db /var/lib/mdict --addr 0.0.0.0:8080
+```
 
 ```
 mdict_svr serve \
