@@ -102,19 +102,36 @@ async fn info(State(st): State<Arc<AppState>>) -> Response {
     dicts(State(st)).await
 }
 
-/// Decide HTML vs Markdown from the `format` param, falling back to `Accept`.
-fn want_markdown(fmt: Option<&str>, headers: &HeaderMap) -> bool {
+/// Output format for a definition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    Html,
+    Markdown,
+    Json,
+}
+
+/// Decide the output format from the `format` param, falling back to `Accept`.
+/// `format` accepts `html`, `md`/`markdown`, or `json`; the `Accept` header is
+/// only honored for Markdown and JSON (HTML is the default).
+fn parse_format(fmt: Option<&str>, headers: &HeaderMap) -> Format {
     if let Some(f) = fmt {
         let f = f.trim().to_ascii_lowercase();
-        return matches!(f.as_str(), "md" | "markdown" | "text/markdown" | "text/x-markdown");
+        return match f.as_str() {
+            "md" | "markdown" | "text/markdown" | "text/x-markdown" => Format::Markdown,
+            "json" | "application/json" => Format::Json,
+            _ => Format::Html,
+        };
     }
     if let Some(acc) = headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()) {
         let acc = acc.to_ascii_lowercase();
         if acc.contains("text/markdown") || acc.contains("text/x-markdown") {
-            return true;
+            return Format::Markdown;
+        }
+        if acc.contains("application/json") {
+            return Format::Json;
         }
     }
-    false
+    Format::Html
 }
 
 /// Rewrite MDict's internal URL schemes in a definition so a browser can actually
@@ -165,7 +182,7 @@ fn gather_html(st: &AppState, word: &str, dict: Option<&str>) -> Result<Vec<(Str
     Ok(out)
 }
 
-async fn respond_definition(st: &Arc<AppState>, word: &str, dict: Option<&str>, markdown: bool) -> Response {
+async fn respond_definition(st: &Arc<AppState>, word: &str, dict: Option<&str>, format: Format) -> Response {
     let matches = match gather_html(st, word, dict) {
         Ok(m) => m,
         Err(resp) => return resp,
@@ -178,45 +195,17 @@ async fn respond_definition(st: &Arc<AppState>, word: &str, dict: Option<&str>, 
             .into_response();
     }
 
-    let xdict = matches
-        .iter()
-        .map(|(n, _)| n.as_str())
-        .collect::<Vec<_>>()
-        .join(",");
+    let names: Vec<&str> = matches.iter().map(|(n, _)| n.as_str()).collect();
+    let xdict = names.join(",");
     let xdict_header = header::HeaderName::from_static("x-dictionary");
     let multi = matches.len() > 1;
 
-    if markdown {
-        // Convert each dictionary's HTML off the async worker, then combine.
-        let htmls: Vec<String> = matches.iter().map(|(_, h)| h.clone()).collect();
-        let mds = tokio::task::spawn_blocking(move || {
-            htmls
-                .iter()
-                .map(|h| html_to_markdown(h))
-                .collect::<Vec<String>>()
-        })
-        .await
-        .unwrap_or_else(|_| matches.iter().map(|(_, h)| h.clone()).collect());
-
-        let body = if multi {
-            matches
-                .iter()
-                .zip(mds.iter())
-                .map(|((name, _), md)| format!("## {name}\n\n{md}"))
-                .collect::<Vec<_>>()
-                .join("\n\n---\n\n")
-        } else {
-            mds.into_iter().next().unwrap_or_default()
-        };
-        (
-            [
-                (header::CONTENT_TYPE, "text/markdown; charset=utf-8"),
-                (xdict_header, xdict.as_str()),
-            ],
-            body,
-        )
-            .into_response()
-    } else {
+    // The combined HTML body, identical for the `html` and `json` formats:
+    // <base href="/"> makes the definition's relative asset refs (e.g.
+    // src="txbapple.jpg") resolve at the origin root regardless of whether the
+    // page was served from /lookup or /word/<w>; the fallback route then serves
+    // them from the resource store.
+    let html_body = {
         let inner = if multi {
             matches
                 .iter()
@@ -228,21 +217,62 @@ async fn respond_definition(st: &Arc<AppState>, word: &str, dict: Option<&str>, 
                 .collect::<Vec<_>>()
                 .join("\n<hr/>\n")
         } else {
-            matches.into_iter().next().map(|(_, h)| h).unwrap_or_default()
+            matches.first().map(|(_, h)| h.clone()).unwrap_or_default()
         };
-        // <base href="/"> makes the definition's relative asset refs (e.g.
-        // src="txbapple.jpg") resolve at the origin root regardless of whether
-        // the page was served from /lookup or /word/<w>; the fallback route then
-        // serves them from the resource store.
-        let body = format!("<base href=\"/\">\n{inner}");
-        (
+        format!("<base href=\"/\">\n{inner}")
+    };
+
+    match format {
+        Format::Json => (
+            [(xdict_header, xdict.as_str())],
+            Json(json!({
+                "word": word,
+                "format": "html",
+                "dictionaries": names,
+                "html": html_body,
+            })),
+        )
+            .into_response(),
+        Format::Markdown => {
+            // Convert each dictionary's HTML off the async worker, then combine.
+            let htmls: Vec<String> = matches.iter().map(|(_, h)| h.clone()).collect();
+            let fallback = htmls.clone();
+            let mds = tokio::task::spawn_blocking(move || {
+                htmls
+                    .iter()
+                    .map(|h| html_to_markdown(h))
+                    .collect::<Vec<String>>()
+            })
+            .await
+            .unwrap_or(fallback);
+
+            let body = if multi {
+                matches
+                    .iter()
+                    .zip(mds.iter())
+                    .map(|((name, _), md)| format!("## {name}\n\n{md}"))
+                    .collect::<Vec<_>>()
+                    .join("\n\n---\n\n")
+            } else {
+                mds.into_iter().next().unwrap_or_default()
+            };
+            (
+                [
+                    (header::CONTENT_TYPE, "text/markdown; charset=utf-8"),
+                    (xdict_header, xdict.as_str()),
+                ],
+                body,
+            )
+                .into_response()
+        }
+        Format::Html => (
             [
                 (header::CONTENT_TYPE, "text/html; charset=utf-8"),
                 (xdict_header, xdict.as_str()),
             ],
-            body,
+            html_body,
         )
-            .into_response()
+            .into_response(),
     }
 }
 
@@ -264,8 +294,8 @@ async fn lookup(
                 .into_response()
         }
     };
-    let markdown = want_markdown(q.format.as_deref(), &headers);
-    respond_definition(&st, &word, q.dict.as_deref(), markdown).await
+    let format = parse_format(q.format.as_deref(), &headers);
+    respond_definition(&st, &word, q.dict.as_deref(), format).await
 }
 
 async fn lookup_path(
@@ -277,8 +307,8 @@ async fn lookup_path(
     if st.registry.is_empty() {
         return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"no dictionaries loaded"}))).into_response();
     }
-    let markdown = want_markdown(q.format.as_deref(), &headers);
-    respond_definition(&st, &word, q.dict.as_deref(), markdown).await
+    let format = parse_format(q.format.as_deref(), &headers);
+    respond_definition(&st, &word, q.dict.as_deref(), format).await
 }
 
 #[derive(Debug, Deserialize)]
@@ -358,7 +388,8 @@ async fn fallback_resource(
 
 #[cfg(test)]
 mod tests {
-    use super::rewrite_urls;
+    use super::{parse_format, rewrite_urls, Format};
+    use axum::http::{header, HeaderMap, HeaderValue};
 
     #[test]
     fn rewrites_mdict_url_schemes() {
@@ -370,5 +401,32 @@ mod tests {
         assert!(!out.contains("sound://"));
         assert!(!out.contains("entry://"));
         assert!(!out.contains("file://"));
+    }
+
+    #[test]
+    fn format_from_param() {
+        let h = HeaderMap::new();
+        assert_eq!(parse_format(Some("json"), &h), Format::Json);
+        assert_eq!(parse_format(Some("JSON"), &h), Format::Json);
+        assert_eq!(parse_format(Some("md"), &h), Format::Markdown);
+        assert_eq!(parse_format(Some("html"), &h), Format::Html);
+        assert_eq!(parse_format(Some("nonsense"), &h), Format::Html);
+        assert_eq!(parse_format(None, &h), Format::Html);
+    }
+
+    #[test]
+    fn format_from_accept() {
+        let mut h = HeaderMap::new();
+        h.insert(header::ACCEPT, HeaderValue::from_static("application/json"));
+        assert_eq!(parse_format(None, &h), Format::Json);
+        // An explicit param wins over the Accept header.
+        assert_eq!(parse_format(Some("md"), &h), Format::Markdown);
+        // A browser's wildcard Accept stays HTML.
+        let mut h2 = HeaderMap::new();
+        h2.insert(
+            header::ACCEPT,
+            HeaderValue::from_static("text/html,application/xhtml+xml,*/*;q=0.8"),
+        );
+        assert_eq!(parse_format(None, &h2), Format::Html);
     }
 }

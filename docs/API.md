@@ -45,7 +45,7 @@ There is no API key, no request body, and no state: every endpoint is a `GET`.
 | **resource store** | A `.mdd` imported into a `.qmd` (flag `is_resource`), attached to a dictionary by name. Holds images/CSS/JS/audio referenced by definitions. |
 | **entry / record** | An *entry* is a unique headword (index key). A *record* is one stored payload. One entry can have several records (homographs), so `records ≥ entries`. |
 | **name** | The handle used in `?dict=` and `/res/{dict}/…`. Chosen via `--db NAME=PATH` (defaults to the file stem). |
-| **format** | `html` (default) or `md`/`markdown`. See [Output formats](#output-formats). |
+| **format** | `html` (default), `md`/`markdown`, or `json`. See [Output formats](#output-formats). |
 
 ### Key normalization
 
@@ -70,7 +70,8 @@ server normalizes both sides.
 - **Request encoding**: query parameters must be percent-encoded
   (`?word=ice%20cream`). Path segments are URL-decoded by the server.
 - **Success content types**:
-  - definitions: `text/html; charset=utf-8` or `text/markdown; charset=utf-8`
+  - definitions: `text/html; charset=utf-8`, `text/markdown; charset=utf-8`, or
+    `application/json` (for `format=json`)
   - resources: a best-effort type from the file extension
     (`mime_guess`), else `application/octet-stream`
   - metadata: `application/json`
@@ -163,7 +164,7 @@ Primary lookup. Returns the definition of a word as HTML or Markdown.
 | --- | --- | --- | --- |
 | `word` | **yes** | — | The headword. Percent-encode spaces/punctuation. Blank → `400`. |
 | `dict` | no | *all* | Restrict to one dictionary by name. Unknown name → `404`. Omit to search every dictionary. |
-| `format` | no | `html` | `html`, or `md`/`markdown`/`text/markdown`/`text/x-markdown` for Markdown. Also inferred from `Accept`. |
+| `format` | no | `html` | `html`, `md`/`markdown`/`text/markdown`/`text/x-markdown` for Markdown, or `json`/`application/json`. Also inferred from `Accept`. |
 
 **Responses**
 
@@ -171,6 +172,8 @@ Primary lookup. Returns the definition of a word as HTML or Markdown.
   [Multi-dictionary resolution](#multi-dictionary-resolution) for how several
   matches are combined). Includes `X-Dictionary`.
 - `200 text/markdown; charset=utf-8` — the same, converted to Markdown. Includes
+  `X-Dictionary`.
+- `200 application/json` — a JSON envelope around the same HTML. Includes
   `X-Dictionary`.
 - `400 application/json` — `word` missing/blank.
 - `404 application/json` — no dictionary has the word, **or** `dict` names an
@@ -185,7 +188,26 @@ curl -i 'http://127.0.0.1:8080/lookup?word=apple'
 
 # Markdown from one dictionary
 curl -s 'http://127.0.0.1:8080/lookup?word=apple&dict=oxford&format=md'
+
+# JSON envelope (html as a field)
+curl -s 'http://127.0.0.1:8080/lookup?word=apple&format=json'
 ```
+
+`200` JSON body (`format=json`):
+
+```json
+{
+  "word": "apple",
+  "format": "html",
+  "dictionaries": ["oxford"],
+  "html": "<base href=\"/\">\n<a href=\"/res/oxford/audio/apple.mp3\">…</a> …"
+}
+```
+
+`html` is byte-for-byte the body the `format=html` request would return
+(including the injected `<base href="/">` and, for multiple matches, the
+`<section data-dict="…">` wrappers). `dictionaries` mirrors the `X-Dictionary`
+header as an array.
 
 `200` Markdown body (single match):
 
@@ -330,14 +352,40 @@ best-effort: dictionary markup varies, so the result is a readable approximation
 not a lossless round-trip. Links, phonetics, and part-of-speech labels survive
 well; exotic styling does not.
 
+### JSON (`format=json`)
+
+The same HTML as `format=html`, wrapped in a JSON envelope for programmatic
+clients:
+
+```json
+{
+  "word": "apple",
+  "format": "html",
+  "dictionaries": ["oxford"],
+  "html": "<base href=\"/\">\n…"
+}
+```
+
+- `html` — identical to the `format=html` body (same `<base href="/">` injection
+  and `<section data-dict="…">` wrappers for multiple matches).
+- `dictionaries` — the matching dictionary names as an array (same values as the
+  `X-Dictionary` header, which is still sent).
+- `format` — always `"html"`, describing the encoding of the `html` field.
+- `word` — the queried headword.
+
+Content type is `application/json`. A miss is still the `404` JSON error, so a
+client can rely on JSON for both outcomes when it asks for `format=json`.
+
 ### Content negotiation
 
 `format` wins when present. Otherwise, an `Accept` header containing
-`text/markdown` or `text/x-markdown` selects Markdown; anything else (including
-`text/html` and `*/*`) selects HTML.
+`text/markdown` or `text/x-markdown` selects Markdown, one containing
+`application/json` selects JSON, and anything else (including `text/html` and
+`*/*`) selects HTML.
 
 ```bash
 curl -H 'Accept: text/markdown' 'http://127.0.0.1:8080/lookup?word=book'
+curl -H 'Accept: application/json' 'http://127.0.0.1:8080/lookup?word=book'
 ```
 
 ## Multi-dictionary resolution

@@ -92,8 +92,8 @@ mdict_svr serve \
 
 | Method & path                             | Description                                                       |
 | ----------------------------------------- | ----------------------------------------------------------------- |
-| `GET /lookup?word=<w>&dict=<name>&format=html\|md` | Definition of `<w>`. `dict` optional; `format` defaults to `html`. |
-| `GET /word/<w>?dict=<name>&format=html\|md`        | Same, word in the path.                                    |
+| `GET /lookup?word=<w>&dict=<name>&format=html\|md\|json` | Definition of `<w>`. `dict` optional; `format` defaults to `html`. |
+| `GET /word/<w>?dict=<name>&format=html\|md\|json`        | Same, word in the path.                                    |
 | `GET /res/<dict>/<path>`                  | A resource from that dictionary's `.mdd` (correct `Content-Type`)  |
 | `GET /<path>`                             | Asset fallback: serves a root-relative resource referenced by a definition |
 | `GET /dicts`                              | JSON list of loaded dictionaries and their metadata                |
@@ -114,14 +114,17 @@ given:
   data-dict="name">` in HTML, `## name` in Markdown).
 
 Either way the responding dictionary name(s) are in the `X-Dictionary` response
-header. `format` may also be implied by `Accept: text/markdown`. Markdown is
-produced by converting the stored HTML at query time (in a blocking task), so the
-database keeps a single source of truth. A missing word returns `404` JSON; an
-unknown `dict` returns `404` JSON.
+header. `format` may also be implied by `Accept: text/markdown` or
+`Accept: application/json`. Markdown is produced by converting the stored HTML at
+query time (in a blocking task), so the database keeps a single source of truth.
+`format=json` wraps the same HTML in a JSON envelope
+(`{"word","format","dictionaries","html"}`) for programmatic clients. A missing
+word returns `404` JSON; an unknown `dict` returns `404` JSON.
 
 ```bash
 curl 'http://127.0.0.1:8080/dicts'
 curl 'http://127.0.0.1:8080/lookup?word=apple&format=md'          # search all
+curl 'http://127.0.0.1:8080/lookup?word=apple&format=json'        # JSON envelope
 curl 'http://127.0.0.1:8080/lookup?word=apple&dict=oxford'        # one dict, HTML
 curl -i 'http://127.0.0.1:8080/lookup?word=zzz'                   # 404 JSON
 curl 'http://127.0.0.1:8080/res/oxford/xiaoxuesheng.css'          # a resource
