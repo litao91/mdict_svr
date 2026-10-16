@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Path, Query, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{header, HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::get,
     Json, Router,
@@ -70,6 +70,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/lookup", get(lookup))
         .route("/word/{word}", get(lookup_path))
         .route("/res/{dict}/{*path}", get(resource))
+        .fallback(fallback_resource)
         .with_state(state)
 }
 
@@ -116,8 +117,23 @@ fn want_markdown(fmt: Option<&str>, headers: &HeaderMap) -> bool {
     false
 }
 
+/// Rewrite MDict's internal URL schemes in a definition so a browser can actually
+/// fetch them from this server:
+///   * `sound://X` and `file://X` → `/res/{dict}/X` (audio/images stored in the .mdd)
+///   * `entry://W`               → `/lookup?word=W` (a cross-reference to headword W)
+///
+/// Scheme-less relative refs (`src="txbapple.jpg"`) are left untouched: a
+/// `<base href="/">` is injected into the response and the fallback route serves
+/// them from the resource store.
+fn rewrite_urls(html: &str, dict: &str) -> String {
+    html.replace("sound://", &format!("/res/{dict}/"))
+        .replace("file://", &format!("/res/{dict}/"))
+        .replace("entry://", "/lookup?word=")
+}
+
 /// Collect the raw HTML for `word` from the selected dictionary (or all of them).
-/// Returns `(dict_name, html)` pairs in registry order.
+/// Returns `(dict_name, html)` pairs in registry order, with URLs rewritten for
+/// that dictionary.
 fn gather_html(st: &AppState, word: &str, dict: Option<&str>) -> Result<Vec<(String, String)>, Response> {
     let entries: Vec<&DictEntry> = match dict {
         Some(name) => match st.registry.get(name) {
@@ -139,12 +155,12 @@ fn gather_html(st: &AppState, word: &str, dict: Option<&str>) -> Result<Vec<(Str
         if records.is_empty() {
             continue;
         }
-        let html = records
+        let raw = records
             .iter()
             .map(|b| decode_record(b))
             .collect::<Vec<_>>()
             .join("\n<hr/>\n");
-        out.push((e.name.clone(), html));
+        out.push((e.name.clone(), rewrite_urls(&raw, &e.name)));
     }
     Ok(out)
 }
@@ -201,7 +217,7 @@ async fn respond_definition(st: &Arc<AppState>, word: &str, dict: Option<&str>, 
         )
             .into_response()
     } else {
-        let body = if multi {
+        let inner = if multi {
             matches
                 .iter()
                 .map(|(name, html)| {
@@ -214,6 +230,11 @@ async fn respond_definition(st: &Arc<AppState>, word: &str, dict: Option<&str>, 
         } else {
             matches.into_iter().next().map(|(_, h)| h).unwrap_or_default()
         };
+        // <base href="/"> makes the definition's relative asset refs (e.g.
+        // src="txbapple.jpg") resolve at the origin root regardless of whether
+        // the page was served from /lookup or /word/<w>; the fallback route then
+        // serves them from the resource store.
+        let body = format!("<base href=\"/\">\n{inner}");
         (
             [
                 (header::CONTENT_TYPE, "text/html; charset=utf-8"),
@@ -260,39 +281,94 @@ async fn lookup_path(
     respond_definition(&st, &word, q.dict.as_deref(), markdown).await
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ResourceQuery {
+    pub dict: Option<String>,
+}
+
+/// Serve a resource by path. With `dict`, use that dictionary's store; without it,
+/// search every loaded resource store in registry order (first match wins).
+async fn serve_resource(st: &AppState, dict: Option<&str>, path: &str) -> Response {
+    let candidates: Vec<&Arc<Dict>> = match dict {
+        Some(name) => match st.registry.get(name) {
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({ "error": "unknown dictionary", "dict": name })),
+                )
+                    .into_response()
+            }
+            Some(e) => match &e.res {
+                Some(r) => vec![r],
+                None => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(json!({ "error": "dictionary has no resources", "dict": name })),
+                    )
+                        .into_response()
+                }
+            },
+        },
+        None => st
+            .registry
+            .entries
+            .iter()
+            .filter_map(|e| e.res.as_ref())
+            .collect(),
+    };
+
+    if candidates.is_empty() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "no resource dictionaries loaded" })),
+        )
+            .into_response();
+    }
+
+    for res in &candidates {
+        if let Some(bytes) = res.lookup_resource(path) {
+            let mime = mime_guess::from_path(path).first_or_octet_stream();
+            return ([(header::CONTENT_TYPE, mime.as_ref())], bytes.to_vec()).into_response();
+        }
+    }
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({ "error": "resource not found", "path": path })),
+    )
+        .into_response()
+}
+
 async fn resource(
     State(st): State<Arc<AppState>>,
     Path((dict, path)): Path<(String, String)>,
 ) -> Response {
-    let entry = match st.registry.get(&dict) {
-        Some(e) => e,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({ "error": "unknown dictionary", "dict": dict })),
-            )
-                .into_response()
-        }
-    };
-    let res = match &entry.res {
-        Some(r) => r,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({ "error": "dictionary has no resources", "dict": dict })),
-            )
-                .into_response()
-        }
-    };
-    match res.lookup_resource(&path) {
-        Some(bytes) => {
-            let mime = mime_guess::from_path(&path).first_or_octet_stream();
-            ([(header::CONTENT_TYPE, mime.as_ref())], bytes.to_vec()).into_response()
-        }
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "resource not found", "dict": dict, "path": path })),
-        )
-            .into_response(),
+    serve_resource(&st, Some(&dict), &path).await
+}
+
+/// Fallback for any unmatched path: definitions reference assets by root-relative
+/// path (e.g. `/media/.../fruit.jpg`, `/snd_uk.png`), which the browser requests
+/// from this origin. Serve those from the resource store(s). `?dict=` scopes it.
+async fn fallback_resource(
+    State(st): State<Arc<AppState>>,
+    uri: Uri,
+    Query(q): Query<ResourceQuery>,
+) -> Response {
+    serve_resource(&st, q.dict.as_deref(), uri.path()).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rewrite_urls;
+
+    #[test]
+    fn rewrites_mdict_url_schemes() {
+        let html = r#"<a href="sound://a.mp3">s</a><a href="entry://Types of fruit">e</a><img src="file://c.png">"#;
+        let out = rewrite_urls(html, "ox");
+        assert!(out.contains(r#"href="/res/ox/a.mp3""#));
+        assert!(out.contains(r#"href="/lookup?word=Types of fruit""#));
+        assert!(out.contains(r#"src="/res/ox/c.png""#));
+        assert!(!out.contains("sound://"));
+        assert!(!out.contains("entry://"));
+        assert!(!out.contains("file://"));
     }
 }

@@ -95,9 +95,16 @@ mdict_svr serve \
 | `GET /lookup?word=<w>&dict=<name>&format=html\|md` | Definition of `<w>`. `dict` optional; `format` defaults to `html`. |
 | `GET /word/<w>?dict=<name>&format=html\|md`        | Same, word in the path.                                    |
 | `GET /res/<dict>/<path>`                  | A resource from that dictionary's `.mdd` (correct `Content-Type`)  |
+| `GET /<path>`                             | Asset fallback: serves a root-relative resource referenced by a definition |
 | `GET /dicts`                              | JSON list of loaded dictionaries and their metadata                |
 | `GET /info`                               | Alias for `/dicts`                                                 |
 | `GET /health`                             | Liveness                                                           |
+
+Definitions are rewritten on the fly so their assets and links work in a browser:
+`sound://X` and `file://X` → `/res/<dict>/X`, `entry://W` → `/lookup?word=W`, and
+a `<base href="/">` is injected so scheme-less refs (`src="txbapple.jpg"`,
+`/media/…/fruit.jpg`) resolve at the origin root and are served by the asset
+fallback from the `.mdd`.
 
 When `dict` is omitted, **all** dictionaries are searched in the order they were
 given:

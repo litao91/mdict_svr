@@ -14,6 +14,8 @@ the exact request/response shapes, status codes, headers, and error bodies.
   - [`GET /lookup`](#get-lookup)
   - [`GET /word/{word}`](#get-wordword)
   - [`GET /res/{dict}/{path}`](#get-resdictpath)
+  - [`GET /{path}` (asset fallback)](#get-path-asset-fallback)
+  - [How definition URLs are made to work](#how-definition-urls-are-made-to-work)
 - [Output formats](#output-formats)
 - [Multi-dictionary resolution](#multi-dictionary-resolution)
 - [Error reference](#error-reference)
@@ -259,7 +261,7 @@ browser resolves them against this endpoint.
 - `404 application/json`:
   - `{ "error": "unknown dictionary", "dict": "<name>" }`
   - `{ "error": "dictionary has no resources", "dict": "<name>" }`
-  - `{ "error": "resource not found", "dict": "<name>", "path": "<path>" }`
+  - `{ "error": "resource not found", "path": "<path>" }`
 
 **Example**
 
@@ -268,7 +270,46 @@ curl -i 'http://127.0.0.1:8080/res/oxford/xiaoxuesheng.css'
 ```
 
 > Resources require importing the companion `.mdd` and launching the server with
-> `--res`. Without it, every `/res/...` returns the "no resources" `404`.
+> `--res` (or a directory containing `X.res.qmd`). Without a resource store, these
+> return a "no resources" `404`.
+
+---
+
+### `GET /{path}` (asset fallback)
+
+Any path that matches no other route is treated as a **resource reference from a
+served definition** and looked up in the loaded resource stores. This is what lets
+a dictionary's images/CSS/audio load: definitions reference assets by root-relative
+path (e.g. `<img src="txbapple.jpg">`, `/media/english/thumb/…/fruit.jpg`), which
+the browser requests from this origin.
+
+- With several resource stores, they are searched in `serve` order; the first hit
+  wins. Add `?dict=<name>` to scope the lookup to one dictionary.
+- Responses are identical to [`/res/{dict}/{path}`](#get-resdictpath): `200` with
+  the bytes and a guessed `Content-Type`, or `404` JSON
+  (`{ "error": "no resource dictionaries loaded" }` or
+  `{ "error": "resource not found", "path": "<path>" }`).
+
+```bash
+curl -i 'http://127.0.0.1:8080/media/english/thumb/f/fru/fruit/fruit.jpg'
+```
+
+### How definition URLs are made to work
+
+Definitions are rewritten **on the fly** when served as HTML (and before
+Markdown conversion), so their links resolve against this server:
+
+| In the dictionary | Rewritten to | Purpose |
+| --- | --- | --- |
+| `sound://X` | `/res/{dict}/X` | pronunciation audio from the `.mdd` |
+| `file://X` | `/res/{dict}/X` | a resource by absolute reference |
+| `entry://W` | `/lookup?word=W` | a cross-reference to headword `W` |
+
+Scheme-less relative refs (`src="txbapple.jpg"`) are left as-is; the response is
+prefixed with `<base href="/">` so they resolve at the origin root, and the
+[asset fallback](#get-path-asset-fallback) serves them. `{dict}` is the name of
+the dictionary the definition came from (each dictionary's HTML is rewritten with
+its own name, so multi-dictionary results stay correctly scoped).
 
 ---
 
@@ -325,7 +366,8 @@ When `dict=NAME` is given, only that dictionary is searched (unknown name →
 | `404` | `?dict=` names an unknown dictionary | `{"error":"unknown dictionary","dict":"<name>"}` |
 | `404` | `/res/{dict}/...` unknown dictionary | `{"error":"unknown dictionary","dict":"<name>"}` |
 | `404` | `/res/{dict}/...` dictionary has no `.mdd` | `{"error":"dictionary has no resources","dict":"<name>"}` |
-| `404` | `/res/{dict}/{path}` path not in the store | `{"error":"resource not found","dict":"<name>","path":"<path>"}` |
+| `404` | resource path not in the store | `{"error":"resource not found","path":"<path>"}` |
+| `404` | asset fallback with no resource store loaded | `{"error":"no resource dictionaries loaded"}` |
 | `503` | server started with zero dictionaries | `{"error":"no dictionaries loaded"}` |
 
 All errors are `application/json`.
