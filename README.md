@@ -5,8 +5,8 @@ Import [MDict](https://en.wikipedia.org/wiki/MDict) dictionaries (`.mdx` words,
 serve word lookups over HTTP as **HTML** or **Markdown**.
 
 Written in Rust, async with **tokio** + **axum**. The MDX/MDD reader is
-implemented from scratch (MDict v2.0: UTF-16LE/UTF-8/GB18030 keys, zlib blocks,
-RIPEMD128 keyword-index obfuscation).
+implemented from scratch (MDict v1.x and v2.0: UTF-16LE/UTF-8/GB18030 keys,
+zlib **and LZO1X** blocks, RIPEMD128 keyword-index obfuscation).
 
 Full request/response reference: **[docs/API.md](docs/API.md)**.
 
@@ -132,10 +132,10 @@ that would overflow qingjian's `u16` length), key normalization, and HTML→MD.
 
 ## Notes / limitations
 
-- Targets MDX **v2.0** (the common modern layout). v1.x is parsed but less
-  exercised.
-- Blocks compressed with **LZO** are rejected with a clear error (the sample and
-  most v2.0 dictionaries use zlib).
+- Supports MDX **v1.x and v2.0**. Record HTML is decoded by sniffing the bytes,
+  so both UTF-8 (modern v2.0) and UTF-16LE (many v1.x, e.g. Collins COBUILD)
+  dictionaries render correctly.
+- Block compression: stored, **zlib**, and **LZO1X** are all supported.
 - Passcode-encrypted keyword headers (`Encrypted` bit `0x01`, Salsa20 + a
   registration code) are not supported; the common `Encrypted="2"`
   (RIPEMD128 index obfuscation) is.

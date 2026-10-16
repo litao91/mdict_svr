@@ -7,7 +7,7 @@ use serde_json::json;
 
 use mdict_svr::build;
 use mdict_svr::lookup::Dict;
-use mdict_svr::md::html_to_markdown;
+use mdict_svr::md::{decode_record, html_to_markdown};
 use mdict_svr::server::{router, AppState, DictEntry, Registry};
 
 #[derive(Parser)]
@@ -287,7 +287,7 @@ fn cmd_lookup(word: String, db: PathBuf, format: String) -> Result<()> {
     }
     let html: String = records
         .iter()
-        .map(|b| String::from_utf8_lossy(b))
+        .map(|b| decode_record(b))
         .collect::<Vec<_>>()
         .join("\n<hr/>\n");
     let markdown = matches!(

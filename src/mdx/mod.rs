@@ -10,6 +10,7 @@ pub mod crypto;
 pub mod decompress;
 pub mod header;
 pub mod keyindex;
+pub mod lzo;
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};

@@ -4,10 +4,11 @@
 //! 4-byte compression-type tag and a 4-byte big-endian adler32 of the
 //! *decompressed* payload, followed by the body:
 //!   * `00 00 00 00` — stored (no compression)
-//!   * `01 00 00 00` — LZO1X (not yet supported here)
+//!   * `01 00 00 00` — LZO1X
 //!   * `02 00 00 00` — zlib
 //!
-//! The Oxford Primary sample (and virtually all v2.0 dictionaries) use zlib.
+//! The Oxford Primary sample uses zlib; v1.x dictionaries (e.g. Collins COBUILD)
+//! commonly use LZO1X.
 
 use std::io::Read;
 
@@ -53,11 +54,12 @@ pub fn decode_block(block: &[u8], expected_len: usize) -> Result<Vec<u8>> {
         TYPE_NONE => body.to_vec(),
         TYPE_ZLIB => zlib_decompress(body)?,
         TYPE_LZO => {
-            return Err(Error::Decompress(
-                "LZO-compressed block: not supported yet (this dictionary uses LZO; \
-                 re-export it with zlib, or enable the LZO backend)"
-                    .to_string(),
-            ))
+            if expected_len == 0 {
+                return Err(Error::Decompress(
+                    "LZO block without a known decompressed size".into(),
+                ));
+            }
+            crate::mdx::lzo::decompress(body, expected_len)?
         }
         other => {
             return Err(Error::Mdx(format!(

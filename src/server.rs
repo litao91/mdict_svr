@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::lookup::Dict;
-use crate::md::html_to_markdown;
+use crate::md::{decode_record, html_to_markdown};
 
 /// One loaded dictionary plus its optional resource store.
 pub struct DictEntry {
@@ -141,7 +141,7 @@ fn gather_html(st: &AppState, word: &str, dict: Option<&str>) -> Result<Vec<(Str
         }
         let html = records
             .iter()
-            .map(|b| String::from_utf8_lossy(b))
+            .map(|b| decode_record(b))
             .collect::<Vec<_>>()
             .join("\n<hr/>\n");
         out.push((e.name.clone(), html));

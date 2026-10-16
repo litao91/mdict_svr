@@ -496,10 +496,11 @@ slice indexing — no `unsafe` beyond the initial `mmap`.
 | Feature | Status |
 | --- | --- |
 | MDX/MDD v2.0 | Supported (primary target) |
-| MDX v1.x | Parsed; less exercised |
+| MDX v1.x | Supported (e.g. Collins COBUILD 8th, v1.2 LZO) |
 | Key encoding UTF-16LE / UTF-8 / GB18030 | Supported |
+| Record text encoding (UTF-8 / UTF-16LE / BOM) | Sniffed per record and decoded |
 | Block compression: stored, zlib | Supported |
-| Block compression: LZO | **Not supported** — rejected with a clear error |
+| Block compression: LZO1X | Supported |
 | `Encrypted="2"` (RIPEMD128 keyword-index obfuscation) | Supported |
 | `Encrypted="0"` (none) | Supported |
 | `Encrypted` bit `0x01` (Salsa20 keyword header + registration passcode) | **Not supported** — import fails with a clear error |
