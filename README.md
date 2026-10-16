@@ -5,8 +5,10 @@ Import [MDict](https://en.wikipedia.org/wiki/MDict) dictionaries (`.mdx` words,
 serve word lookups over HTTP as **HTML** or **Markdown**.
 
 Written in Rust, async with **tokio** + **axum**. The MDX/MDD reader is
-implemented from scratch (v2.0: UTF-16LE keys, zlib blocks, RIPEMD128 keyword-index
-obfuscation).
+implemented from scratch (MDict v2.0: UTF-16LE/UTF-8/GB18030 keys, zlib blocks,
+RIPEMD128 keyword-index obfuscation).
+
+Full request/response reference: **[docs/API.md](docs/API.md)**.
 
 ## The packed index (`qmd`)
 
