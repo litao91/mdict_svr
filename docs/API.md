@@ -13,6 +13,7 @@ the exact request/response shapes, status codes, headers, and error bodies.
   - [`GET /info`](#get-info)
   - [`GET /lookup`](#get-lookup)
   - [`GET /word/{word}`](#get-wordword)
+  - [`GET /suggest`](#get-suggest)
   - [`GET /res/{dict}/{path}`](#get-resdictpath)
   - [`GET /{path}` (asset fallback)](#get-path-asset-fallback)
   - [How definition URLs are made to work](#how-definition-urls-are-made-to-work)
@@ -259,6 +260,60 @@ words with `?`, `#`, `&`, or `+`, prefer `/lookup?word=…` (query encoding is
 unambiguous). Responses, status codes, and `X-Dictionary` are identical to
 `/lookup`. A missing word is not possible here (it is the path), so there is no
 `400`.
+
+---
+
+### `GET /suggest`
+
+As-you-type autocomplete: given a partial input, return the headwords that begin
+with it. Backed by a prefix scan of the byte-sorted key index (binary search to
+the range, then a short walk), so cost is independent of record size and never
+touches the TEXT arena.
+
+**Query parameters**
+
+| Name | Required | Default | Description |
+| --- | --- | --- | --- |
+| `q` | no | `""` | The partial input. `word` and `prefix` are accepted as aliases (first present wins). Missing/empty returns the alphabetically first headwords. |
+| `dict` | no | *all* | Restrict to one dictionary by name. Unknown name → `404`. Omit to search every dictionary. |
+| `limit` | no | `20` | Max suggestions, clamped to `1..=100`. |
+
+**Response** `200 application/json`
+
+```json
+{
+  "query": "app",
+  "count": 8,
+  "suggestions": [
+    "apparatus", "appear", "appearance", "appendix",
+    "appetite", "applaud", "apple", "appreciate"
+  ]
+}
+```
+
+- `suggestions` are the **stored (normalized) headwords** — lowercased for
+  case-insensitive dictionaries — i.e. exactly the strings `/lookup?word=…`
+  expects, so a client can feed a chosen suggestion straight back.
+- When searching multiple dictionaries the results are **merged, deduped, and
+  sorted** into one flat list (no per-dictionary grouping). `X-Dictionary` names
+  the dictionaries that were searched.
+- `count` is `suggestions.length` (≤ `limit`).
+
+**Errors**
+
+- `404 application/json` — `dict` names an unknown dictionary.
+- `503 application/json` — the server was started with no dictionaries.
+
+Unlike `/lookup`, no-match is **not** an error: it returns `200` with an empty
+`suggestions` array.
+
+**Examples**
+
+```bash
+curl -s 'http://127.0.0.1:8080/suggest?q=app&limit=10'
+curl -s 'http://127.0.0.1:8080/suggest?q=ban&dict=oxford'
+curl -s 'http://127.0.0.1:8080/suggest?prefix=fruit'   # alias
+```
 
 ---
 

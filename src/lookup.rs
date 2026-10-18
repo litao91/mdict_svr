@@ -81,6 +81,20 @@ impl Dict {
             .next()
             .map(|(_, bytes)| bytes)
     }
+
+    /// Suggest headwords that begin with `partial`, in ascending order, up to
+    /// `limit`. The partial input is normalized exactly like a lookup query, so
+    /// matching is case-insensitive for case-insensitive dictionaries. Returned
+    /// headwords are the stored (normalized) keys — the same form `lookup_word`
+    /// expects.
+    pub fn suggest(&self, partial: &str, limit: usize) -> Vec<String> {
+        let key = normalize_key(partial, self.case_sensitive, false);
+        self.qmd
+            .keys_with_prefix(key.as_bytes(), limit)
+            .into_iter()
+            .map(|b| String::from_utf8_lossy(b).into_owned())
+            .collect()
+    }
 }
 
 #[cfg(test)]

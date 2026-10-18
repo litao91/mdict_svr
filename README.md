@@ -94,6 +94,7 @@ mdict_svr serve \
 | ----------------------------------------- | ----------------------------------------------------------------- |
 | `GET /lookup?word=<w>&dict=<name>&format=html\|md\|json` | Definition of `<w>`. `dict` optional; `format` defaults to `html`. |
 | `GET /word/<w>?dict=<name>&format=html\|md\|json`        | Same, word in the path.                                    |
+| `GET /suggest?q=<partial>&dict=<name>&limit=<n>` | Headwords that start with `<partial>` (as-you-type autocomplete); JSON. |
 | `GET /res/<dict>/<path>`                  | A resource from that dictionary's `.mdd` (correct `Content-Type`)  |
 | `GET /<path>`                             | Asset fallback: serves a root-relative resource referenced by a definition |
 | `GET /dicts`                              | JSON list of loaded dictionaries and their metadata                |
@@ -126,9 +127,16 @@ curl 'http://127.0.0.1:8080/dicts'
 curl 'http://127.0.0.1:8080/lookup?word=apple&format=md'          # search all
 curl 'http://127.0.0.1:8080/lookup?word=apple&format=json'        # JSON envelope
 curl 'http://127.0.0.1:8080/lookup?word=apple&dict=oxford'        # one dict, HTML
+curl 'http://127.0.0.1:8080/suggest?q=app&limit=10'               # autocomplete
 curl -i 'http://127.0.0.1:8080/lookup?word=zzz'                   # 404 JSON
 curl 'http://127.0.0.1:8080/res/oxford/xiaoxuesheng.css'          # a resource
 ```
+
+`/suggest` returns JSON `{ "query", "count", "suggestions": [headword, …] }`,
+scanning the byte-sorted key index (binary search to the prefix range, then a
+short walk) so cost is independent of record size. It searches all dictionaries
+by default (deduped, sorted), or one with `dict=`; `limit` defaults to 20 and is
+capped at 100. An empty `q` returns the alphabetically first headwords.
 
 ## Tests
 

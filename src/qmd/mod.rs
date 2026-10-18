@@ -446,6 +446,42 @@ impl Qmd {
                 .collect(),
         }
     }
+
+    /// Index of the first key that sorts >= `prefix` (`num_keys` if none). Since
+    /// the index is byte-sorted, every key starting with `prefix` is contiguous
+    /// from here — this is the lower bound of the prefix range.
+    fn lower_bound(&self, prefix: &[u8]) -> u64 {
+        let (mut lo, mut hi) = (0u64, self.s.num_keys);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if self.key_bytes(mid) < prefix {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    }
+
+    /// Collect up to `limit` keys that begin with `prefix`, in ascending order.
+    /// Cost is O(log n) to find the range plus O(limit) to walk it, independent
+    /// of record sizes. An empty `prefix` yields the alphabetically first keys.
+    pub fn keys_with_prefix(&self, prefix: &[u8], limit: usize) -> Vec<&[u8]> {
+        let mut out = Vec::new();
+        if limit == 0 {
+            return out;
+        }
+        let mut i = self.lower_bound(prefix);
+        while i < self.s.num_keys && out.len() < limit {
+            let k = self.key_bytes(i);
+            if !k.starts_with(prefix) {
+                break;
+            }
+            out.push(k);
+            i += 1;
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -518,6 +554,35 @@ mod tests {
         let q = Qmd::open(&path).unwrap();
         assert!(q.is_resource());
         assert_eq!(q.lookup(b"img/x.png")[0].1, &bytes[..]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn prefix_scan() {
+        let path = tmp("prefix");
+        {
+            let mut b = QmdBuilder::create(&path, false, Meta::default()).unwrap();
+            for w in ["apple", "app", "apply", "banana", "band", "bandage", "cat"] {
+                b.add(w, b"<p/>", KIND_HTML).unwrap();
+            }
+            b.finish().unwrap();
+        }
+        let q = Qmd::open(&path).unwrap();
+        let got = |p: &[u8], n: usize| -> Vec<String> {
+            q.keys_with_prefix(p, n)
+                .into_iter()
+                .map(|b| String::from_utf8_lossy(b).into_owned())
+                .collect()
+        };
+        // Sorted ascending; exact-prefix matches only.
+        assert_eq!(got(b"app", 10), ["app", "apple", "apply"]);
+        assert_eq!(got(b"ban", 10), ["banana", "band", "bandage"]);
+        // limit truncates
+        assert_eq!(got(b"ba", 2), ["banana", "band"]);
+        // no match -> empty
+        assert!(got(b"zebra", 10).is_empty());
+        // empty prefix -> alphabetically first keys
+        assert_eq!(got(b"", 2), ["app", "apple"]);
         let _ = std::fs::remove_file(&path);
     }
 }

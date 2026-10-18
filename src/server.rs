@@ -1,7 +1,7 @@
 //! HTTP API (axum): serve lookups across one or more dictionaries, returning
 //! definitions as HTML or Markdown, plus per-dictionary resources and metadata.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use axum::{
@@ -69,6 +69,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/dicts", get(dicts))
         .route("/lookup", get(lookup))
         .route("/word/{word}", get(lookup_path))
+        .route("/suggest", get(suggest))
         .route("/res/{dict}/{*path}", get(resource))
         .fallback(fallback_resource)
         .with_state(state)
@@ -309,6 +310,89 @@ async fn lookup_path(
     }
     let format = parse_format(q.format.as_deref(), &headers);
     respond_definition(&st, &word, q.dict.as_deref(), format).await
+}
+
+const DEFAULT_SUGGEST_LIMIT: usize = 20;
+const MAX_SUGGEST_LIMIT: usize = 100;
+
+#[derive(Debug, Deserialize)]
+pub struct SuggestParams {
+    /// The partial input to complete. `q` is canonical; `word`/`prefix` are
+    /// accepted as aliases.
+    pub q: Option<String>,
+    pub word: Option<String>,
+    pub prefix: Option<String>,
+    /// Restrict to one dictionary by name; omit to search all.
+    pub dict: Option<String>,
+    pub limit: Option<usize>,
+}
+
+/// Autocomplete endpoint: given a partial input, return headwords that begin with
+/// it. Prefix scanning is a cheap binary search + short walk over the mmap'd,
+/// byte-sorted key index, so this runs inline on the async worker.
+async fn suggest(State(st): State<Arc<AppState>>, Query(q): Query<SuggestParams>) -> Response {
+    if st.registry.is_empty() {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"no dictionaries loaded"}))).into_response();
+    }
+    let partial = q
+        .q
+        .or(q.word)
+        .or(q.prefix)
+        .unwrap_or_default();
+    // A missing param and an empty one both mean "no input"; return the
+    // alphabetically first headwords rather than an error, which is friendlier
+    // for an as-you-type UI that starts from "".
+    let limit = q.limit.map(|l| l.clamp(1, MAX_SUGGEST_LIMIT)).unwrap_or(DEFAULT_SUGGEST_LIMIT);
+
+    let entries: Vec<&DictEntry> = match q.dict.as_deref() {
+        Some(name) => match st.registry.get(name) {
+            Some(e) => vec![e],
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({ "error": "unknown dictionary", "dict": name })),
+                )
+                    .into_response()
+            }
+        },
+        None => st.registry.entries.iter().collect(),
+    };
+
+    // Merge across dictionaries, dedupe, and keep the list globally sorted.
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for e in &entries {
+        for s in e.dict.suggest(&partial, limit) {
+            if seen.insert(s.clone()) {
+                out.push(s);
+            }
+            if out.len() >= limit {
+                break;
+            }
+        }
+        if out.len() >= limit {
+            break;
+        }
+    }
+    out.sort();
+    out.truncate(limit);
+
+    (
+        [(
+            header::HeaderName::from_static("x-dictionary"),
+            entries
+                .iter()
+                .map(|e| e.name.as_str())
+                .collect::<Vec<_>>()
+                .join(","),
+        )],
+        Json(json!({
+            "query": partial,
+            "count": out.len(),
+            "suggestions": out,
+        })),
+    )
+        .into_response()
 }
 
 #[derive(Debug, Deserialize)]
