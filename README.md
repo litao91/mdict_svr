@@ -112,7 +112,7 @@ given:
 
 * one match → that dictionary's definition is returned as-is;
 * several matches → they are concatenated, labeled per dictionary (`<section
-  data-dict="name">` in HTML, `## name` in Markdown).
+  data-dict="name">` in HTML, `# name` in Markdown).
 
 Either way the responding dictionary name(s) are in the `X-Dictionary` response
 header. `format` may also be implied by `Accept: text/markdown` or
@@ -146,7 +146,9 @@ cargo test
 
 Covers RIPEMD128 known-answer vectors, the index cipher round-trip, zlib/stored
 block decoding, `qmd` round-trip (including duplicate keys and a >64 KiB record
-that would overflow qingjian's `u16` length), key normalization, and HTML→MD.
+that would overflow qingjian's `u16` length), key normalization, `@@@LINK`
+redirect resolution, and HTML→MD. The Markdown tests are regression tests built
+from real snippets of each dictionary in `./data`; see `src/md/tests.rs`.
 
 ## Notes / limitations
 
@@ -158,3 +160,12 @@ that would overflow qingjian's `u16` length), key normalization, and HTML→MD.
   registration code) are not supported; the common `Encrypted="2"`
   (RIPEMD128 index obfuscation) is.
 - The `qmd` database is immutable; re-run `import` to rebuild.
+- Entries stored as `@@@LINK=<target>` redirect stubs (29% of OALD9) are followed
+  to their target, so inflected forms return the headword's definition.
+- Markdown is derived at query time and is a faithful *reading* of the record,
+  not a lossless one: colour, font and size have no Markdown equivalent and are
+  dropped, as is the web-app chrome the dictionary's own stylesheet hides. Two
+  source-data defects are visible in the output and are not conversion bugs — the
+  新牛津英汉双解大词典 writes phonetics in a proprietary `Kingsoft Phonetic Plain`
+  font (so `/rQn/` only looks like /rʌn/ in that font), and some `col` records are
+  double-encoded UTF-8.

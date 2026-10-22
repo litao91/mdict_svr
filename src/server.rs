@@ -251,7 +251,9 @@ async fn respond_definition(st: &Arc<AppState>, word: &str, dict: Option<&str>, 
                 matches
                     .iter()
                     .zip(mds.iter())
-                    .map(|((name, _), md)| format!("## {name}\n\n{md}"))
+                    // `#`, one level above the `##` the converter gives an entry's
+                    // headword, so the dictionary name stays the outer heading.
+                    .map(|((name, _), md)| format!("# {name}\n\n{md}"))
                     .collect::<Vec<_>>()
                     .join("\n\n---\n\n")
             } else {

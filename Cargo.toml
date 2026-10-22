@@ -34,8 +34,10 @@ adler32 = "1.2"       # header/index checksums
 # packed container
 memmap2 = "0.9"
 
-# HTML -> Markdown at query time
-html2md = "0.2"
+# HTML -> Markdown at query time. html5ever's tree builder is reused directly so
+# the converter can be tailored to dictionary markup; rcdom gives the DOM.
+html5ever = "0.39"
+markup5ever_rcdom = "0.39"
 
 # resource content types
 mime_guess = "2"

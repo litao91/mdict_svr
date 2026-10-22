@@ -63,6 +63,19 @@ Lookups and stored keys are normalized identically, so matching is predictable:
 You pass the *natural* form (e.g. `?word=Apple` or `/res/oxford/img/x.png`); the
 server normalizes both sides.
 
+### Redirects
+
+Some MDict dictionaries store an entry as a bare `@@@LINK=<target>` control string
+instead of HTML — OALD9 does this for 24,298 of its records (29%), covering
+inflected forms and variants, so `'ll` points at `will` and `abased` at `abase`.
+Lookups follow these to the target entry and return *its* definition, in every
+format. The chain is deduplicated and cycle-guarded, so a key whose slots all
+point at the same target yields one copy, and a dictionary that points a key at
+itself terminates instead of spinning.
+
+If a target cannot be resolved, the stub is returned rather than dropped: as HTML
+it is the raw `@@@LINK=` text, and as Markdown it renders as `→ <target>`.
+
 ## Conventions
 
 - **Base URL**: `http://<addr>` where `<addr>` is `serve --addr` (default
@@ -213,10 +226,11 @@ header as an array.
 `200` Markdown body (single match):
 
 ```markdown
-[**apple**](sound://audio/apple.mp3) /ˈæpl/  
-**noun** 名词 **plural** 复数形式 [**apples**](sound://audio/apples.mp3)  
-a round, crisp, juicy fruit  
-[苹果](sound://audio/苹果.mp3)
+**apple**  
+**apple** [audio](/res/oxford/ukappen014.spx) [audio](/res/oxford/apple.spx) /ˈæp.l̩/ **noun** [**C** or **U**]  
+![txbapple](txbapple.jpg)
+
+► **A1** a round fruit with firm, white flesh and a green, red, or yellow skin:
 ```
 
 `404` body:
@@ -394,18 +408,38 @@ its own name, so multi-dictionary results stay correctly scoped).
 
 ### HTML (`format=html`, default)
 
-The dictionary's original record bytes, served verbatim as
-`text/html; charset=utf-8`. Records are UTF-8 for modern dictionaries. When one
-entry has multiple records (homographs) they are concatenated with `\n<hr/>\n`.
+The dictionary's record, decoded to text and served as `text/html; charset=utf-8`.
+Modern dictionaries store UTF-8; many v1.x ones (e.g. Collins COBUILD) store
+UTF-16LE, which is transcoded by sniffing the bytes rather than trusting the
+header. Every record's trailing NUL terminator is stripped. Otherwise the markup
+is passed through untouched. When one entry has multiple records (homographs)
+they are concatenated with `\n<hr/>\n`.
 
 ### Markdown (`format=md`)
 
-Each matching dictionary's HTML is converted with `html2md` **at query time** (in
-a blocking task, so it never stalls the async runtime). The database stores only
-HTML — Markdown is derived, keeping a single source of truth. Conversion is
-best-effort: dictionary markup varies, so the result is a readable approximation,
-not a lossless round-trip. Links, phonetics, and part-of-speech labels survive
-well; exotic styling does not.
+Each matching dictionary's HTML is converted **at query time**, in a blocking task
+so it never stalls the async runtime. The database stores only HTML — Markdown is
+derived, keeping a single source of truth.
+
+The converter is built into this crate (`src/md/`) on top of `html5ever`, and is
+written against the markup the real dictionaries actually use rather than being a
+general-purpose HTML→Markdown tool. In particular it:
+
+- collapses the source's indentation and padding whitespace, so pretty-printed
+  records do not turn into indented code blocks;
+- treats `<br>` and `display:block` (as either an inline style or an attribute)
+  as line structure, which is how most of these dictionaries are laid out;
+- drops web-app chrome — `script`/`style`/`link`/`meta`, HTML comments, hidden
+  subtrees, and the "Add to my wordlist" / "jump to other results" / "enlarge
+  image" / "Check pronunciation" controls — while *keeping* the text of panels the
+  original collapses behind a JavaScript toggle ("Word Origin", "Extra examples");
+- renders pronunciation links as `[audio](…)`, and keeps the label when the link
+  wraps real text rather than an icon;
+- turns sense numbers, examples, cross-references, idioms and section panels into
+  numbered lead-ins, bullet lists, links and headings.
+
+Colour, font and size carry no Markdown equivalent and are dropped; the words they
+styled are not.
 
 ### JSON (`format=json`)
 
@@ -454,7 +488,8 @@ passed to `serve`:
 3. **Several dictionaries match** → results are concatenated, each labeled:
    - HTML: `<section class="dict" data-dict="NAME"><h3>NAME</h3>…</section>`,
      sections joined by `\n<hr/>\n`.
-   - Markdown: `## NAME\n\n<body>`, blocks joined by `\n\n---\n\n`.
+   - Markdown: `# NAME\n\n<body>`, blocks joined by `\n\n---\n\n`. `#` sits one
+     level above the `##` the converter gives an entry's headword.
    - `X-Dictionary` lists all matching names, comma-separated, in search order.
 
 When `dict=NAME` is given, only that dictionary is searched (unknown name →
