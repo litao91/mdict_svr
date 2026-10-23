@@ -1,5 +1,16 @@
 <script lang="ts">
-  import { ButtonGroup, Icon, MultiSelect, NumberRangeInput, Sheet, Toggle } from 'svelte-widgets'
+  import {
+    ButtonGroup,
+    ColorInput,
+    Icon,
+    JsonTree,
+    MultiSelect,
+    NumberRangeInput,
+    SettingsGroup,
+    SettingsSection,
+    Sheet,
+    Toggle,
+  } from 'svelte-widgets'
   import { Close } from 'svelte-widgets/icons'
   import { apply_theme_mode, theme } from 'svelte-widgets/theme'
   import { dicts, display_name } from '../lib/dicts.svelte.js'
@@ -19,7 +30,28 @@
     { value: 'markdown' as const, label: 'Markdown' },
   ]
 
+  // Mirrors the `--accent` tokens in styles/base.css; picking either one again
+  // clears the override rather than pinning the theme's own color.
+  const THEME_ACCENTS = ['#8c4a2f', '#e0906a']
+  const ACCENT_PRESETS = [
+    '#8c4a2f',
+    '#e0906a',
+    '#2f6f8c',
+    '#4a7a3a',
+    '#7a3a5e',
+    '#8c6a2f',
+    '#3a4a7a',
+    '#8c2f3a',
+  ]
+
+  const theme_accent = $derived(theme.mode === 'dark' ? THEME_ACCENTS[1] : THEME_ACCENTS[0])
+
   const dict_options = $derived(dicts.all.map((d) => d.name))
+
+  const server_snapshot = $derived({
+    dictionaries: dicts.all,
+    transcode: dicts.transcode,
+  })
 
   /**
    * MultiSelect's own value, kept separate from `settings.enabled_dicts` because
@@ -58,13 +90,8 @@
 
   {#snippet children()}
     <div class="settings-body">
-      <div class="settings-group">
-        <h3 class="settings-group__title">Appearance</h3>
-
-        <div class="settings-row">
-          <div class="settings-row__head">
-            <span class="settings-row__label">Theme</span>
-          </div>
+      <SettingsGroup title="Appearance" open>
+        <SettingsSection title="Theme">
           <ButtonGroup
             options={theme_options}
             label="Theme"
@@ -73,12 +100,24 @@
               if (value) apply_theme_mode(value)
             }}
           />
-        </div>
+        </SettingsSection>
 
-        <div class="settings-row">
-          <div class="settings-row__head">
-            <span class="settings-row__label">Text size</span>
-          </div>
+        <SettingsSection title="Accent colour">
+          <ColorInput
+            value={settings.accent ?? theme_accent}
+            presets={ACCENT_PRESETS}
+            commit="change"
+            on_commit={(value) => {
+              const picked = value.trim().toLowerCase()
+              settings.accent = !picked || THEME_ACCENTS.includes(picked) ? null : picked
+            }}
+          />
+          <p class="settings-row__hint">
+            Tints links, tabs and highlights. Picking the theme's own colour clears the override.
+          </p>
+        </SettingsSection>
+
+        <SettingsSection title="Text size">
           <NumberRangeInput
             value={settings.font_scale}
             min={FONT_SCALE_MIN}
@@ -91,26 +130,20 @@
             }}
           />
           <p class="settings-row__hint">Scales the definition text only, not the interface.</p>
-        </div>
-      </div>
+        </SettingsSection>
+      </SettingsGroup>
 
-      <div class="settings-group">
-        <h3 class="settings-group__title">Reading</h3>
-
-        <div class="settings-row">
-          <div class="settings-row__head">
-            <span class="settings-row__label">Default view</span>
-          </div>
+      <SettingsGroup title="Reading" open>
+        <SettingsSection title="Default view">
           <ButtonGroup options={view_options} label="Default view" bind:value={settings.view} />
           <p class="settings-row__hint">
             “Entry” renders the publisher's markup, styled here. “Markdown” asks the server for its
             plain-text conversion instead.
           </p>
-        </div>
+        </SettingsSection>
 
-        <div class="settings-row">
+        <SettingsSection title="Hover previews">
           <div class="settings-row__head">
-            <span class="settings-row__label">Hover previews</span>
             <Toggle bind:checked={settings.previews}>
               {#snippet children()}<span class="sr-only">Hover previews</span>{/snippet}
             </Toggle>
@@ -118,16 +151,11 @@
           <p class="settings-row__hint">
             Hover a cross-reference to see the first lines of that entry without leaving this one.
           </p>
-        </div>
-      </div>
+        </SettingsSection>
+      </SettingsGroup>
 
-      <div class="settings-group">
-        <h3 class="settings-group__title">Dictionaries</h3>
-
-        <div class="settings-row">
-          <div class="settings-row__head">
-            <span class="settings-row__label">Search these</span>
-          </div>
+      <SettingsGroup title="Dictionaries" open>
+        <SettingsSection title="Search these">
           <MultiSelect
             options={dict_options}
             mode="multiple"
@@ -151,20 +179,36 @@
               dictionary in the sidebar to widen it.
             {/if}
           </p>
-        </div>
-      </div>
+        </SettingsSection>
+      </SettingsGroup>
 
-      <div class="settings-group">
-        <h3 class="settings-group__title">Data</h3>
-        <div class="settings-actions">
-          <button class="sheet-btn" type="button" onclick={clear_history}>
-            Clear look-up history ({words.recent.length})
-          </button>
-          <button class="sheet-btn" type="button" onclick={reset_settings}>
-            Reset settings to defaults
-          </button>
-        </div>
-      </div>
+      <SettingsGroup title="Data & server">
+        <SettingsSection title="Look-up history">
+          <div class="settings-actions">
+            <button class="sheet-btn" type="button" onclick={clear_history}>
+              Clear look-up history ({words.recent.length})
+            </button>
+            <button class="sheet-btn" type="button" onclick={reset_settings}>
+              Reset settings to defaults
+            </button>
+          </div>
+        </SettingsSection>
+
+        <SettingsSection title="Server metadata">
+          <p class="settings-row__hint">
+            What <code>/dicts</code> reports, including whether this server can transcode audio
+            ({dicts.transcode ? 'yes' : 'no'}).
+          </p>
+          <div class="json-pane">
+            <JsonTree
+              value={server_snapshot}
+              root_label="server"
+              default_fold_level={1}
+              download_filename="mdict-dicts.json"
+            />
+          </div>
+        </SettingsSection>
+      </SettingsGroup>
     </div>
   {/snippet}
 </Sheet>
@@ -216,6 +260,15 @@
     color: var(--fg);
     border-color: var(--border-strong);
   }
+  .json-pane {
+    max-height: 16rem;
+    overflow: auto;
+    padding: 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-sunken);
+    font-size: 0.75rem;
+  }
   .sr-only {
     position: absolute;
     width: 1px;
@@ -226,6 +279,15 @@
     clip-path: inset(50%);
     white-space: nowrap;
     border: 0;
+  }
+  /* SettingsGroup/SettingsSection insert <details>/<section> wrappers between
+     the body and the controls; without min-width:0 on every link of that chain
+     the MultiSelect's nowrap chips push the sheet past the viewport. */
+  .settings-body > :global(*),
+  .settings-body :global(details),
+  .settings-body :global(section) {
+    min-width: 0;
+    max-width: 100%;
   }
   /* MultiSelect chips are `white-space: nowrap` flex items, so a 40-character
      dictionary name widens the sheet past the viewport unless the chip and its

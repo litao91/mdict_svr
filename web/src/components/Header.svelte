@@ -1,8 +1,23 @@
 <script lang="ts">
-  import { Icon, ThemeToggle } from 'svelte-widgets'
-  import { BookOpen, DotsVertical, Home, Search } from 'svelte-widgets/icons'
+  import { ActionMenu, DraggablePane, Icon, ThemeToggle } from 'svelte-widgets'
+  import type { CmdAction } from 'svelte-widgets'
+  import type { IconData } from 'svelte-widgets/icons'
+  import {
+    BookOpen,
+    Close,
+    Copy,
+    DotsVertical,
+    History,
+    Home,
+    Menu,
+    Search,
+    Shuffle,
+    TuneVariant,
+  } from 'svelte-widgets/icons'
+  import { toast } from 'svelte-widgets/toast-queue'
+  import Sidebar from './Sidebar.svelte'
   import WordSearch from './WordSearch.svelte'
-  import { words } from '../lib/words.svelte.js'
+  import { clear_history, random_word, words } from '../lib/words.svelte.js'
 
   let {
     on_open_settings,
@@ -11,6 +26,49 @@
     on_open_settings: () => void
     on_open_palette: () => void
   } = $props()
+
+  // Under 900px the static sidebar rail is hidden; this pane is the only way to
+  // reach history and the dictionary list there.
+  let nav_open = $state(false)
+
+  type MenuAction = CmdAction & { icon: IconData }
+
+  const menu_actions = $derived<MenuAction[]>([
+    {
+      id: 'menu-settings',
+      label: 'Settings',
+      icon: TuneVariant,
+      action: () => on_open_settings(),
+    },
+    {
+      id: 'menu-random',
+      label: 'Look up a random word',
+      icon: Shuffle,
+      action: () => void random_word(),
+    },
+    {
+      id: 'menu-copy',
+      label: 'Copy a link to this entry',
+      icon: Copy,
+      disabled: !words.word,
+      action: () => {
+        void navigator.clipboard
+          ?.writeText(window.location.href)
+          .then(() => toast.show('Link copied', { priority: 'success', dedupe_key: 'copy-link' }))
+          .catch(() => toast.show('The browser refused to copy', { priority: 'warning' }))
+      },
+    },
+    {
+      id: 'menu-clear',
+      label: `Clear look-up history (${words.recent.length})`,
+      icon: History,
+      disabled: words.recent.length === 0,
+      action: () => {
+        clear_history()
+        toast.show('Look-up history cleared', { priority: 'success', dedupe_key: 'clear-history' })
+      },
+    },
+  ])
 </script>
 
 <header class="topbar">
@@ -29,6 +87,30 @@
   <div class="topbar__spacer"></div>
 
   <div class="topbar__actions">
+    <DraggablePane
+      align="start"
+      position="fixed"
+      resize="width"
+      max_width="82vw"
+      bind:open={nav_open}
+      pane_props={{ class: 'nav-pane', 'aria-label': 'Dictionaries and look-up history' }}
+    >
+      {#snippet toggle(state)}
+        <button
+          class="icon-btn nav-toggle"
+          type="button"
+          title="Dictionaries and history"
+          aria-expanded={state.open}
+          onclick={() => (nav_open = !state.open)}
+        >
+          <Icon icon={state.open ? Close : Menu} width={17} height={17} />
+          <span class="sr-only">Dictionaries and history</span>
+        </button>
+      {/snippet}
+      {#snippet children()}
+        <Sidebar />
+      {/snippet}
+    </DraggablePane>
     {#if words.word}
       <button class="icon-btn" type="button" title="Start page" onclick={() => (words.word = '')}>
         <Icon icon={Home} width={17} height={17} />
@@ -40,10 +122,20 @@
       <span class="sr-only">Search</span>
     </button>
     <ThemeToggle class="icon-btn" tooltip={false} />
-    <button class="icon-btn" type="button" title="Settings" onclick={on_open_settings}>
-      <Icon icon={DotsVertical} width={17} height={17} />
-      <span class="sr-only">Settings</span>
-    </button>
+    <ActionMenu actions={menu_actions} align="end" offset={6}>
+      {#snippet trigger({ onclick, ...aria })}
+        <button class="icon-btn" type="button" title="More actions" {onclick} {...aria}>
+          <Icon icon={DotsVertical} width={17} height={17} />
+          <span class="sr-only">More actions</span>
+        </button>
+      {/snippet}
+      {#snippet item({ action })}
+        <span class="menu-row">
+          <Icon icon={action.icon} width={15} height={15} />
+          {action.label}
+        </span>
+      {/snippet}
+    </ActionMenu>
   </div>
 </header>
 
@@ -66,14 +158,38 @@
     color: var(--fg);
   }
   .brand {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
     padding: 0.2rem 0.35rem;
     border: 0;
     border-radius: var(--radius-sm);
     background: transparent;
+    color: var(--fg);
+    font-weight: 650;
+    letter-spacing: -0.01em;
     cursor: pointer;
   }
   .brand:hover {
     background: var(--bg-sunken);
+  }
+  .nav-toggle {
+    display: none;
+  }
+  @media (max-width: 900px) {
+    .nav-toggle {
+      display: grid;
+    }
+  }
+  .nav-pane {
+    background: var(--bg);
+    border-inline-end: 1px solid var(--border);
+    padding: 0.75rem 0.5rem;
+  }
+  .menu-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
   }
   .sr-only {
     position: absolute;

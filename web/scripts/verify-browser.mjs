@@ -16,6 +16,8 @@ import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
 
 const BASE = process.env.BASE ?? 'http://127.0.0.1:8396'
+// Set to '' to assert the no-transcoder degrade path instead.
+const TRANSCODE_BASE = process.env.TRANSCODE !== '0'
 const SHOTS = '/tmp/shots'
 mkdirSync(SHOTS, { recursive: true })
 
@@ -238,33 +240,40 @@ await wait_entry('OALD9')
   await shot('06-hash-anchor')
 }
 
-// ── 7. CALD4 apple: unsupported Speex ─────────────────────────────────────
+// ── 7. CALD4 apple: Speex is transcoded on the server when it can be ──────
 await goto_word('apple', 'CALD4')
 await wait_entry('CALD4')
 {
-  const unsupported = page.locator('.entry a[data-audio][data-playable="0"]')
-  const n = await unsupported.count()
-  check('CALD4 apple marks .spx as unplayable', n > 0, `${n} anchors`)
+  const unplayable = page.locator('.entry a[data-audio][data-playable="0"]')
+  const n = await unplayable.count()
+  check('CALD4 apple marks .spx as not natively playable', n > 0, `${n} anchors`)
   media_responses.length = 0
-  await unsupported.first().click()
-  await page.waitForTimeout(1200)
+  await unplayable.first().click()
+  await page.waitForSelector('.player', { timeout: 8000 }).catch(() => {})
+  await page.waitForTimeout(2500)
   const info = await page.evaluate(() => {
     const region = document.querySelector('.player')
-    const dl = document.querySelector('.player a[download]')
     return {
-      text: region?.textContent?.replace(/\s+/g, ' ') ?? '',
-      download: dl?.getAttribute('href') ?? null,
-      toasts: [...document.querySelectorAll('.toast-stack [role]')]
-        .map((t) => t.textContent?.replace(/\s+/g, ' ').trim())
-        .filter(Boolean),
+      visible: !!region,
+      text: region?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+      warned: !!document.querySelector('.player__status--warn'),
+      seek_max: Number(document.querySelector('.player__seek')?.getAttribute('max') ?? 0),
+      download: !!document.querySelector('.player a[download]'),
     }
   })
-  check('the unsupported state names Ogg-Speex', /Speex/.test(info.text), info.text.trim().slice(0, 130))
-  check('the unsupported state offers a download', !!info.download, String(info.download))
-  check('a toast explains it too', info.toasts.some((t) => /Speex/i.test(t)), JSON.stringify(info.toasts.slice(0, 2)))
-  check('no element was created for the .spx file',
-    media_responses.filter((r) => /\.spx/.test(r.url)).length === 0, JSON.stringify(media_responses))
-  await shot('07-cald4-speex-unsupported')
+  const wav = media_responses.find((r) => /\/transcode\//.test(r.url))
+  if (TRANSCODE_BASE) {
+    check('clicking .spx asks the server to transcode it', !!wav, JSON.stringify(media_responses))
+    check('the transcode answer is WAV and it plays',
+      wav?.status === 200 && wav?.type === 'audio/wav' && info.seek_max > 0 && !info.warned,
+      `${JSON.stringify(wav)} seek_max=${info.seek_max} "${info.text.slice(0, 80)}"`)
+  } else {
+    check('without a transcoder the Speex state explains the codec',
+      /Speex/.test(info.text) && info.download, info.text.trim().slice(0, 120))
+    check('no element was created for the raw .spx file',
+      media_responses.filter((r) => /\.spx/.test(r.url)).length === 0, JSON.stringify(media_responses))
+  }
+  await shot('07-cald4-speex')
   await page.locator('.player__stop').first().click().catch(() => {})
   await page.waitForTimeout(300)
 }
@@ -420,7 +429,12 @@ await wait_entry('OALD9')
 {
   await goto_word('apple', 'OALD9')
   await wait_entry('OALD9')
-  await page.locator('button[title="Settings"]').click()
+  await page.locator('button[title="More actions"]').click()
+  await page.waitForTimeout(500)
+  check('the overflow menu lists its actions',
+    (await page.locator('[role="menu"] [role="menuitem"], [role="menu"] button').count()) >= 4,
+    `${await page.locator('[role="menu"] button, [role="menu"] [role="menuitem"]').count()} items`)
+  await page.locator('[role="menu"]').getByText('Settings', { exact: false }).first().click()
   await page.waitForTimeout(800)
   check('the settings sheet opens', await page.evaluate(() => !!document.querySelector('dialog[open]')))
   await shot('12-settings-sheet')
@@ -604,6 +618,33 @@ await wait_entry('OALD9')
   check('clicking a tab switches the entry without a reload',
     switched.dict === switched.url && switched.dict === labels[1], JSON.stringify(switched))
   await shot('16-tabs')
+}
+
+// ── 17. the shell scrolls, the chrome does not ────────────────────────────
+{
+  await goto_word('hand', 'OALD9')
+  await wait_entry('OALD9', 60000)
+  const before = await page.evaluate(() => ({
+    content: document.querySelector('.scroll-area').scrollTop,
+    side: document.querySelector('.shell__side').getBoundingClientRect().top,
+    bar: document.querySelector('.topbar').getBoundingClientRect().top,
+    doc: window.scrollY,
+  }))
+  await page.mouse.move(700, 500)
+  await page.mouse.wheel(0, 800)
+  await page.waitForTimeout(600)
+  const after = await page.evaluate(() => ({
+    content: document.querySelector('.scroll-area').scrollTop,
+    side: document.querySelector('.shell__side').getBoundingClientRect().top,
+    bar: document.querySelector('.topbar').getBoundingClientRect().top,
+    doc: window.scrollY,
+  }))
+  check('the mouse wheel scrolls the entry', after.content > before.content,
+    `scrollTop ${before.content} → ${after.content}`)
+  check('sidebar and topbar stay put while the content scrolls',
+    after.side === before.side && after.bar === before.bar,
+    `side ${before.side} → ${after.side}, topbar ${before.bar} → ${after.bar}`)
+  check('the document itself never scrolls', after.doc === 0, `scrollY=${after.doc}`)
 }
 
 await browser.close()

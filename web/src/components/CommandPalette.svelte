@@ -3,7 +3,7 @@
   import type { CmdAction } from 'svelte-widgets'
   import { apply_theme_mode, theme } from 'svelte-widgets/theme'
   import { fetch_suggest } from '../lib/api.js'
-  import { clear_history, home, navigate, words } from '../lib/words.svelte.js'
+  import { clear_history, home, navigate, random_word, words } from '../lib/words.svelte.js'
 
   let {
     open = $bindable(false),
@@ -63,19 +63,6 @@
     group: 'Recent',
     action: () => navigate(word),
   }))
-
-  async function random_word() {
-    const letters = 'abcdefghijklmnopqrstuvwxyz'
-    const pick = () => letters[Math.floor(Math.random() * letters.length)]!
-    for (let attempt = 0; attempt < 6; attempt++) {
-      const list = await fetch_suggest(attempt < 3 ? pick() : pick() + pick(), { limit: 100 })
-      const usable = list.filter((w) => /^[a-z]/i.test(w))
-      if (usable.length > 0) {
-        navigate(usable[Math.floor(Math.random() * usable.length)]!)
-        return
-      }
-    }
-  }
 
   // Live headword completion. `/suggest` is a prefix scan, so the results are
   // already exact matches; CommandMenu's own fuzzy pass runs over them on top.

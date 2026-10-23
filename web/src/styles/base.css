@@ -14,7 +14,8 @@
   --fg-muted: #5c574f;
   --fg-faint: #8a847a;
   --accent: #8c4a2f;
-  --accent-soft: #f0e2da;
+  /* Derived, so a user-chosen --accent (ColorInput) restyles the soft tints too. */
+  --accent-soft: color-mix(in srgb, var(--accent) 13%, var(--bg-raised));
   --accent-fg: #ffffff;
   --border: #e2ddd5;
   --border-strong: #cec7bb;
@@ -43,7 +44,7 @@ html[data-theme='dark'] {
   --fg-muted: #a8a49b;
   --fg-faint: #7c7870;
   --accent: #e0906a;
-  --accent-soft: #33261f;
+  --accent-soft: color-mix(in srgb, var(--accent) 20%, var(--bg-raised));
   --accent-fg: #14161a;
   --border: #2a2e36;
   --border-strong: #3b4048;
@@ -65,6 +66,13 @@ html,
 body {
   margin: 0;
   padding: 0;
+  /* The app is a shell: header, sidebar and player stay put and only
+     `.scroll-area` moves. Without a bounded height chain that element grows
+     to the height of the entry, the *document* becomes the scroller, the
+     sidebar scrolls away with the content, and the wheel finds no scroll
+     container under the pointer. */
+  height: 100%;
+  overflow: hidden;
 }
 
 body {
@@ -80,7 +88,8 @@ body {
 #app {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100%;
+  min-height: 0;
 }
 
 a {
@@ -989,12 +998,13 @@ input[type='range'] {
 }
 
 .md-view {
+  /* CodeBlock renders the server's Markdown conversion; these are its knobs. */
+  --code-block-bg: var(--bg-sunken);
+  --code-block-radius: var(--radius-sm);
+  --code-block-padding: 0.9rem 1.1rem;
+  --code-block-font-size: calc(0.86rem * var(--font-scale, 1));
+  --code-font: var(--read-font);
   max-width: var(--measure);
-  font-family: var(--read-font);
-  font-size: calc(1rem * var(--font-scale, 1));
-  line-height: 1.75;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
   color: var(--fg);
 }
 
@@ -1007,5 +1017,32 @@ input[type='range'] {
 @media (max-width: 900px) {
   .search__kbd {
     display: none;
+  }
+}
+
+/* The shell clips everything to the viewport; paper must not inherit that. */
+@media print {
+  html,
+  body {
+    height: auto;
+    overflow: visible;
+  }
+  #app,
+  .shell,
+  .shell__main,
+  .scroll-area {
+    display: block;
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+  }
+  .shell__side,
+  .topbar,
+  .player,
+  .app-footer,
+  .toolbar,
+  .entry-toc,
+  .word-nav {
+    display: none !important;
   }
 }

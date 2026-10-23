@@ -1,5 +1,16 @@
 <script lang="ts">
-  import { Icon, PrevNext, Progress, Spinner, StatusMessage, Tabs, Toc } from 'svelte-widgets'
+  import {
+    CodeBlock,
+    Icon,
+    PrevNext,
+    Progress,
+    Spinner,
+    StatusMessage,
+    SplitPane,
+    Tabs,
+    TaskStatus,
+    Toc,
+  } from 'svelte-widgets'
   import { BookSearch, Headphones, LinkVariant, MusicOff } from 'svelte-widgets/icons'
   import EntryToolbar from './EntryToolbar.svelte'
   import EntryView from './EntryView.svelte'
@@ -63,6 +74,23 @@
     entry && entry.headings.length >= 2
       ? entry.headings.map((h) => ({ id: h.id, level: h.level, title: h.text }))
       : [],
+  )
+
+  /** One TaskStatus row per searched dictionary, while the fan-out is in flight. */
+  const task_rows = $derived(
+    Object.entries(results).map(([name, r]) => ({
+      name,
+      label:
+        r.status === 'miss' ? `${display_name(name)} — no match` : display_name(name),
+      state:
+        r.status === 'loading'
+          ? ('running' as const)
+          : r.status === 'ok'
+            ? ('success' as const)
+            : r.status === 'miss'
+              ? ('cancelled' as const)
+              : ('error' as const),
+    })),
   )
 
   const errors = $derived.by(() => {
@@ -258,6 +286,11 @@
       max={total}
       label="Searching dictionaries"
     />
+    <div class="lookup-tasks">
+      {#each task_rows as row (row.name)}
+        <TaskStatus state={row.state} label={row.label} />
+      {/each}
+    </div>
   {/if}
 
   {#if errors.length > 0}
@@ -338,13 +371,20 @@
             {/if}
           </div>
 
-          <div class="entry-columns">
+          <div class="entry-columns" class:entry-columns--solo={toc_items.length < 2}>
             <div class="entry-wrap" bind:this={entry_wrap}>
               {#if settings.view === 'markdown'}
                 {#if markdown === null}
                   <div class="spinner-wrap"><Spinner text="Converting to Markdown…" /></div>
                 {:else}
-                  <pre class="md-view" style="--font-scale:{settings.font_scale}">{markdown}</pre>
+                  <CodeBlock
+                    class="md-view"
+                    style="--font-scale:{settings.font_scale}"
+                    code={markdown}
+                    language="markdown"
+                    label="Markdown conversion"
+                    wrap
+                  />
                 {/if}
               {:else if entry}
                 <EntryView {entry} dict={item.value} word={words.word} bind:find_open {on_image} on_word={navigate} />
@@ -355,6 +395,15 @@
               <aside class="entry-toc">
                 <Toc items={toc_items} desktop={true} min_items={2} />
               </aside>
+              <!-- Divider only: it writes --split-pane-size onto .entry-columns,
+                   which is what sizes the two grid tracks. -->
+              <SplitPane
+                orientation="horizontal"
+                ratio={0.78}
+                min_ratio={0.55}
+                max_ratio={0.88}
+                aria-label="Resize the entry and its outline"
+              />
             {/if}
           </div>
         {/if}
@@ -396,20 +445,30 @@
     gap: 0.35rem;
     margin-bottom: 0.9rem;
   }
+  .lookup-tasks {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
+    gap: 0.25rem 1.2rem;
+    margin-top: 0.5rem;
+  }
+
   .entry-columns {
-    display: flex;
-    align-items: flex-start;
-    gap: 2rem;
+    position: relative;
+    display: grid;
+    grid-template-columns: var(--split-pane-size, minmax(0, 1fr)) 15rem;
+    gap: 0 1.4rem;
+    align-items: start;
+  }
+  .entry-columns--solo {
+    grid-template-columns: minmax(0, 1fr);
   }
   .entry-wrap {
-    flex: 1;
     min-width: 0;
   }
   .entry-toc {
     position: sticky;
     top: 1rem;
-    flex: none;
-    width: 15rem;
+    min-width: 0;
     max-height: calc(100vh - 12rem);
     overflow-y: auto;
     font-size: 0.82rem;

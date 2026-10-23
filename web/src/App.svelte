@@ -98,7 +98,9 @@
     width: 15.5rem;
     border-right: 1px solid var(--border);
     background: color-mix(in srgb, var(--bg-raised) 55%, var(--bg));
-    overflow: hidden;
+    /* Scrolls on its own so a long history never pushes the shell taller. */
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
   @media (max-width: 900px) {
     .shell__side {

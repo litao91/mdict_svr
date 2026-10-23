@@ -10,6 +10,7 @@
 
 import { create_recent_list, storage_set_json } from 'svelte-widgets/storage'
 import { url_with_params, type UrlParamEntry } from 'svelte-widgets/url-params'
+import { fetch_suggest } from './api.js'
 
 const RECENT_KEY = 'mdict.recent'
 const MAX_RECENT = 40
@@ -85,6 +86,23 @@ export function forget(word: string): void {
 export function clear_history(): void {
   words.recent = []
   storage_set_json(RECENT_KEY, [])
+}
+
+/**
+ * Pick a headword at random. `/suggest` is a forward-only prefix scan, so the
+ * only way to sample the index is to ask for a random letter's window.
+ */
+export async function random_word(): Promise<void> {
+  const letters = 'abcdefghijklmnopqrstuvwxyz'
+  const pick = () => letters[Math.floor(Math.random() * letters.length)]!
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const list = await fetch_suggest(attempt < 3 ? pick() : pick() + pick(), { limit: 100 })
+    const usable = list.filter((w) => /^[a-z]/i.test(w))
+    if (usable.length > 0) {
+      navigate(usable[Math.floor(Math.random() * usable.length)]!)
+      return
+    }
+  }
 }
 
 /** Read the initial word from the URL and keep back/forward working. */

@@ -22,6 +22,8 @@ export interface Settings {
   previews: boolean
   /** Show the pronunciation audio controls inline. */
   show_audio: boolean
+  /** Custom accent color, or null for the theme's own. */
+  accent: string | null
 }
 
 export const FONT_SCALE_MIN = 0.85
@@ -33,6 +35,7 @@ const DEFAULTS: Settings = {
   enabled_dicts: [],
   previews: true,
   show_audio: true,
+  accent: null,
 }
 
 function load(): Settings {
@@ -53,6 +56,8 @@ function load(): Settings {
       : [],
     previews: typeof raw.previews === 'boolean' ? raw.previews : DEFAULTS.previews,
     show_audio: typeof raw.show_audio === 'boolean' ? raw.show_audio : DEFAULTS.show_audio,
+    accent:
+      typeof raw.accent === 'string' && /^#[0-9a-f]{6}$/i.test(raw.accent) ? raw.accent : null,
   }
 }
 
@@ -65,6 +70,7 @@ function snapshot(): Settings {
     enabled_dicts: [...settings.enabled_dicts],
     previews: settings.previews,
     show_audio: settings.show_audio,
+    accent: settings.accent,
   }
 }
 
@@ -74,6 +80,13 @@ if (typeof window !== 'undefined') {
   $effect.root(() => {
     $effect(() => {
       storage_set_json(KEY, snapshot())
+    })
+    // An inline custom property beats both theme blocks, and `--accent-soft`
+    // is derived from `--accent` with color-mix, so one override restyles all.
+    $effect(() => {
+      const root = document.documentElement
+      if (settings.accent) root.style.setProperty('--accent', settings.accent)
+      else root.style.removeProperty('--accent')
     })
   })
 }
