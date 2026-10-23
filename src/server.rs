@@ -2,6 +2,7 @@
 //! definitions as HTML or Markdown, plus per-dictionary resources and metadata.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
@@ -13,6 +14,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::json;
+use tokio::sync::Mutex;
 
 use crate::lookup::Dict;
 use crate::md::{decode_record, html_to_markdown};
@@ -55,6 +57,28 @@ pub struct AppState {
     /// Built web UI to serve alongside the API (`serve --web`). `None` leaves
     /// routing exactly as it was: `/` falls through to the resource lookup.
     pub web: Option<crate::web::WebRoot>,
+    /// External decoder behind `/transcode`, for codecs no browser can play
+    /// (Ogg-Speex `.spx`). `None` makes the route answer 501 and the UI keeps
+    /// offering the file as a download instead.
+    pub ffmpeg: Option<PathBuf>,
+    /// Transcoded clips keyed by `dict\u0000path`. A Speex clip is a few KB in
+    /// and ~100 KB of WAV out, so caching beats re-decoding on every replay.
+    transcode_cache: Mutex<HashMap<String, Arc<Vec<u8>>>>,
+}
+
+impl AppState {
+    pub fn new(
+        registry: Arc<Registry>,
+        web: Option<crate::web::WebRoot>,
+        ffmpeg: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            registry,
+            web,
+            ffmpeg,
+            transcode_cache: Mutex::new(HashMap::new()),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,7 +97,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/lookup", get(lookup))
         .route("/word/{word}", get(lookup_path))
         .route("/suggest", get(suggest))
-        .route("/res/{dict}/{*path}", get(resource));
+        .route("/res/{dict}/{*path}", get(resource))
+        // Always registered: with no `--ffmpeg` it answers 501, which is how
+        // the UI learns there is nothing to convert with.
+        .route("/transcode/{*path}", get(transcode));
     // Only with `--web`. The SPA holds its state in the query string and has no
     // path routes, so these three cannot collide with the dictionary asset paths
     // the fallback below serves.
@@ -109,7 +136,12 @@ fn dict_json(e: &DictEntry) -> serde_json::Value {
 
 async fn dicts(State(st): State<Arc<AppState>>) -> Response {
     let list: Vec<_> = st.registry.entries.iter().map(dict_json).collect();
-    Json(json!({ "dictionaries": list })).into_response()
+    Json(json!({
+        "dictionaries": list,
+        // Lets the UI offer "play" for codecs it cannot decode itself.
+        "transcode": st.ffmpeg.is_some(),
+    }))
+    .into_response()
 }
 
 async fn info(State(st): State<Arc<AppState>>) -> Response {
@@ -467,23 +499,35 @@ pub struct ResourceQuery {
 /// `crate::web` calls this too, so an SPA route that matches no built file still
 /// resolves a dictionary asset keyed the same way.
 pub(crate) async fn serve_resource(st: &AppState, dict: Option<&str>, path: &str) -> Response {
+    match resource_bytes(st, dict, path) {
+        Ok(bytes) => {
+            let mime = mime_guess::from_path(path).first_or_octet_stream();
+            ([(header::CONTENT_TYPE, mime.as_ref())], bytes).into_response()
+        }
+        Err(response) => response,
+    }
+}
+
+/// The stored bytes behind a resource reference, or the 404 that explains why
+/// there are none. Shared by `/res`, the asset fallback and `/transcode`.
+fn resource_bytes(st: &AppState, dict: Option<&str>, path: &str) -> Result<Vec<u8>, Response> {
     let candidates: Vec<&Arc<Dict>> = match dict {
         Some(name) => match st.registry.get(name) {
             None => {
-                return (
+                return Err((
                     StatusCode::NOT_FOUND,
                     Json(json!({ "error": "unknown dictionary", "dict": name })),
                 )
-                    .into_response()
+                    .into_response())
             }
             Some(e) => match &e.res {
                 Some(r) => vec![r],
                 None => {
-                    return (
+                    return Err((
                         StatusCode::NOT_FOUND,
                         Json(json!({ "error": "dictionary has no resources", "dict": name })),
                     )
-                        .into_response()
+                        .into_response())
                 }
             },
         },
@@ -496,24 +540,136 @@ pub(crate) async fn serve_resource(st: &AppState, dict: Option<&str>, path: &str
     };
 
     if candidates.is_empty() {
-        return (
+        return Err((
             StatusCode::NOT_FOUND,
             Json(json!({ "error": "no resource dictionaries loaded" })),
         )
-            .into_response();
+            .into_response());
     }
 
     for res in &candidates {
         if let Some(bytes) = res.lookup_resource(path) {
-            let mime = mime_guess::from_path(path).first_or_octet_stream();
-            return ([(header::CONTENT_TYPE, mime.as_ref())], bytes.to_vec()).into_response();
+            return Ok(bytes.to_vec());
         }
     }
-    (
+    Err((
         StatusCode::NOT_FOUND,
         Json(json!({ "error": "resource not found", "path": path })),
     )
+        .into_response())
+}
+
+/// Pronunciation clips are a few KB; anything bigger is not audio this route
+/// should be re-encoding on demand.
+const MAX_TRANSCODE_INPUT: usize = 8 << 20;
+
+/// Decode a stored audio file no browser can play — in practice Ogg-Speex `.spx`,
+/// which CALD4 and the Sound libraries use for every pronunciation — into PCM WAV,
+/// which all of them can. Speex has neither a browser decoder nor a pure-Rust
+/// one, so this shells out to an external ffmpeg (`serve --ffmpeg`); without it
+/// the route answers 501 and the UI keeps offering the file as a download.
+///
+/// The path is resolved through the resource stores, never the filesystem, so
+/// there is nothing to traverse.
+async fn transcode(
+    State(st): State<Arc<AppState>>,
+    Path(path): Path<String>,
+    Query(q): Query<ResourceQuery>,
+) -> Response {
+    let Some(ffmpeg) = st.ffmpeg.clone() else {
+        return (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({ "error": "transcoding not configured" })),
+        )
+            .into_response();
+    };
+    if path.is_empty() || path.ends_with('/') {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "resource not found", "path": path })),
+        )
+            .into_response();
+    }
+    let key = format!("{}\u{0}{}", q.dict.as_deref().unwrap_or(""), path);
+    if let Some(cached) = st.transcode_cache.lock().await.get(&key) {
+        return wav_response(cached.clone());
+    }
+    let input = match resource_bytes(&st, q.dict.as_deref(), &path) {
+        Ok(bytes) => bytes,
+        Err(response) => return response,
+    };
+    if input.len() > MAX_TRANSCODE_INPUT {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(json!({ "error": "audio too large to transcode", "bytes": input.len() })),
+        )
+            .into_response();
+    }
+    let decoded = tokio::task::spawn_blocking(move || run_ffmpeg(&ffmpeg, &input))
+        .await
+        .unwrap_or_else(|e| Err(format!("transcode task failed: {e}")));
+    match decoded {
+        Ok(wav) => {
+            let wav = Arc::new(wav);
+            st.transcode_cache.lock().await.insert(key, wav.clone());
+            wav_response(wav)
+        }
+        Err(detail) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": "undecodable audio", "detail": detail })),
+        )
+            .into_response(),
+    }
+}
+
+fn wav_response(wav: Arc<Vec<u8>>) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "audio/wav"),
+            // The input is immutable, so the output is too.
+            (header::CACHE_CONTROL, "public, max-age=604800"),
+        ],
+        (*wav).clone(),
+    )
         .into_response()
+}
+
+fn run_ffmpeg(ffmpeg: &std::path::Path, input: &[u8]) -> Result<Vec<u8>, String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(ffmpeg)
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            "pipe:0",
+            "-f",
+            "wav",
+            "-c:a",
+            "pcm_s16le",
+            "pipe:1",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to start {}: {e}", ffmpeg.display()))?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "ffmpeg stdin unavailable".to_owned())?;
+    stdin.write_all(input).map_err(|e| e.to_string())?;
+    drop(stdin);
+    let out = child.wait_with_output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(stderr.trim().chars().take(300).collect());
+    }
+    if out.stdout.is_empty() {
+        return Err("ffmpeg produced no output".to_owned());
+    }
+    Ok(out.stdout)
 }
 
 async fn resource(

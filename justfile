@@ -69,10 +69,16 @@ serve: build
 serve-web: build
     ./target/debug/mdict_svr serve --db {{data}} --web web/dist --addr {{addr}}
 
-# Serve as the browser verification does, attaching the Sound store explicitly
+# ffmpeg used by /transcode to play Ogg-Speex; empty disables transcoding
+ffmpeg := env_var_or_default("MDICT_FFMPEG", "web/node_modules/ffmpeg-static/ffmpeg")
+
+# Serve as the browser verification does: the Sound store attached explicitly
+# (directory scanning skips Sound_us_uk.res.qmd) and Speex transcoding on
 serve-verify: build
-    ./target/debug/mdict_svr serve --db {{data}} \
-        --res Sound={{data}}/Sound_us_uk.res.qmd --web web/dist --addr {{addr}}
+    #!/usr/bin/env bash
+    args=(--db {{data}} --res Sound={{data}}/Sound_us_uk.res.qmd --web web/dist --addr {{addr}})
+    [ -x "{{ffmpeg}}" ] && args+=(--ffmpeg "{{ffmpeg}}")
+    ./target/debug/mdict_svr serve "${args[@]}"
 
 # ── web frontend ────────────────────────────────────────────────────────────
 

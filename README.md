@@ -148,10 +148,12 @@ light/dark themes. It sanitizes the stored publisher markup before injecting it
 and remaps the publishers' inline colours so every dictionary stays legible on a
 dark background.
 
-Audio that no browser can decode is detected up front and degraded explicitly:
-CALD4 and the Sound libraries store Ogg-Speex `.spx`, which the server reports as
-`200 audio/ogg` and `<audio>` then fails to *decode*, so the player explains the
-codec and offers the file as a download instead of failing silently.
+Audio that no browser can decode is handled up front: CALD4 and the Sound
+libraries store Ogg-Speex `.spx`, which the server reports as `200 audio/ogg` and
+`<audio>` then fails to *decode*. With `serve --ffmpeg <PATH>` the player asks
+`GET /transcode/{path}` to re-encode the clip to WAV on first play (cached after
+that); without a decoder configured it explains the codec and offers the file as
+a download instead of failing silently.
 
 ```bash
 cd web
@@ -166,7 +168,8 @@ npm run test:browser # headless-Chromium pass; needs a running `serve --web`
 Serve the build from the Rust binary so one command gives one origin:
 
 ```bash
-mdict_svr serve --db ./data --web web/dist --addr 127.0.0.1:8080
+mdict_svr serve --db ./data --web web/dist --addr 127.0.0.1:8080 \
+    --ffmpeg $(command -v ffmpeg)   # optional: play Ogg-Speex by transcoding
 ```
 
 `--web` adds exactly three routes — `/`, `/index.html` (the shell, `no-cache`) and

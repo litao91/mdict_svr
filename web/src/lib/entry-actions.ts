@@ -11,7 +11,8 @@
 import { toast } from 'svelte-widgets/toast-queue'
 import { tooltip } from 'svelte-widgets/attachments'
 import { fetch_markdown } from './api.js'
-import { detect_variant, reject, toggle } from './audio.svelte.js'
+import { detect_variant, play_via_server, reject, toggle } from './audio.svelte.js'
+import { dicts } from './dicts.svelte.js'
 
 export interface EntryCallbacks {
   /** A cross-reference to another headword was activated. */
@@ -110,6 +111,12 @@ export function attach_entry_behavior(host: HTMLElement, cb: EntryCallbacks): ()
         marked = a
         a.classList.add('is-playing')
         toggle(url, { dict: dict(), label: word(), variant: detect_variant(url, a) })
+      } else if (dicts.transcode) {
+        // The browser cannot decode this codec, but the server can re-encode it.
+        clear_marked()
+        marked = a
+        a.classList.add('is-playing')
+        play_via_server(url, dict(), { label: word(), variant: detect_variant(url, a) })
       } else {
         reject(url, dict())
       }

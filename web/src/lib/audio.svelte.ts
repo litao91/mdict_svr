@@ -94,22 +94,33 @@ function element(): HTMLAudioElement | null {
 
 /**
  * Work out *why* playback failed. The `<audio>` element only reports a decode
- * error, which is what both a missing file and an undecodable codec look like,
- * so a lightweight fetch separates them. Audio files here are 3–6 KB, and this
- * only runs on failure.
+ * error, which is what a missing file, an undecodable codec and a server with
+ * no transcoder all look like, so a lightweight fetch separates them. Audio
+ * files here are 3–6 KB, and this only runs on failure.
  */
 async function diagnose(): Promise<void> {
-  const url = player.url
+  const url = el?.currentSrc || player.url
   if (!url) return
   player.status = 'error'
   try {
     const res = await fetch(url, { headers: { accept: '*/*' } })
-    if (!res.ok) {
+    if (res.status === 404) {
       player.status = 'missing'
       player.reason = 'http'
       toast.show(`No audio file stored for this entry (HTTP ${res.status})`, {
         priority: 'warning',
-        dedupe_key: `missing:${url}`,
+        dedupe_key: `missing:${player.url}`,
+      })
+      return
+    }
+    if (!res.ok) {
+      // 501 from /transcode: nothing on the server can decode this codec.
+      player.status = 'unsupported'
+      player.reason = 'codec'
+      toast.show('This server has no audio transcoder configured', {
+        priority: 'warning',
+        dedupe_key: 'transcode:unconfigured',
+        action: download_action(player.url),
       })
       return
     }
@@ -120,7 +131,7 @@ async function diagnose(): Promise<void> {
   player.reason = 'decode'
   toast.show('This browser could not decode the audio file', {
     priority: 'error',
-    dedupe_key: `decode:${url}`,
+    dedupe_key: `decode:${player.url}`,
   })
 }
 
@@ -186,17 +197,61 @@ export function reject(url: string, dict: string | null): void {
     {
       priority: 'warning',
       dedupe_key: `codec:${ext}`,
-      action: {
-        label: 'Download',
-        on_click: () => {
-          const a = document.createElement('a')
-          a.href = url
-          a.download = file_label(url)
-          a.click()
-        },
-      },
+      action: download_action(url),
     },
   )
+}
+
+function download_action(url: string | null) {
+  return {
+    label: 'Download',
+    on_click: () => {
+      if (!url) return
+      const a = document.createElement('a')
+      a.href = url
+      a.download = file_label(url)
+      a.click()
+    },
+  }
+}
+
+/**
+ * Map a resource reference onto the server's transcoder. `/res/{dict}/{path}`
+ * keeps its dictionary; anything else searches every store, exactly like the
+ * asset fallback does.
+ */
+export function transcode_url_for(href: string, dict: string | null): string {
+  const segments = href.split('/')
+  const path =
+    segments[1] === 'res' && segments.length > 3 ? segments.slice(3).join('/') : href.replace(/^\//, '')
+  const scope = dict ? `?dict=${encodeURIComponent(dict)}` : ''
+  return `/transcode/${path}${scope}`
+}
+
+/**
+ * Play a codec the browser cannot decode by asking the server to re-encode it
+ * on the fly. `player.url` keeps the original reference so the "now playing"
+ * highlight and the download fallback stay honest about what is stored.
+ */
+export function play_via_server(url: string, dict: string | null, meta: PlayMeta = {}): void {
+  const audio = element()
+  if (!audio) {
+    toast.show('Audio is not available in this environment', { priority: 'error' })
+    return
+  }
+  player.url = url
+  player.dict = meta.dict ?? dict
+  player.label = meta.label ?? file_label(url)
+  player.variant = meta.variant ?? null
+  player.reason = null
+  player.position = 0
+  player.duration = 0
+  player.status = 'loading'
+  audio.src = transcode_url_for(url, dict)
+  audio.volume = player.volume
+  void audio.play().catch(() => {
+    /* the error listener does the real diagnosis */
+  })
 }
 
 export function toggle(url: string, meta: PlayMeta = {}): void {

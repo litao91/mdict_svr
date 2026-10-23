@@ -54,12 +54,19 @@ async function error_body(res: Response): Promise<string> {
   return `HTTP ${res.status}`
 }
 
-/** `GET /dicts` — the loaded dictionaries and their metadata. */
-export async function fetch_dicts(signal?: AbortSignal): Promise<DictInfo[]> {
+export interface ServerInfo {
+  dictionaries: DictInfo[]
+  /** The server has an ffmpeg configured, so `/transcode` can re-encode audio
+      no browser can play (Ogg-Speex). Without it those stay download-only. */
+  transcode: boolean
+}
+
+/** `GET /dicts` — the loaded dictionaries and what the server can do. */
+export async function fetch_dicts(signal?: AbortSignal): Promise<ServerInfo> {
   const res = await fetch('/dicts', { signal, headers: { accept: 'application/json' } })
   if (!res.ok) throw new Error(await error_body(res))
-  const body = (await res.json()) as { dictionaries?: DictInfo[] }
-  return body.dictionaries ?? []
+  const body = (await res.json()) as Partial<ServerInfo>
+  return { dictionaries: body.dictionaries ?? [], transcode: body.transcode === true }
 }
 
 /** `GET /suggest` — prefix autocomplete. No match is `200` with an empty list. */

@@ -73,6 +73,10 @@ enum Command {
         /// output of `npm run build` in `web/`). Must contain `index.html`.
         #[arg(long)]
         web: Option<PathBuf>,
+        /// ffmpeg binary used by `GET /transcode` to decode audio no browser can
+        /// play (Ogg-Speex `.spx`). Without it those files stay download-only.
+        #[arg(long)]
+        ffmpeg: Option<PathBuf>,
     },
     /// Print database metadata as JSON
     Info {
@@ -101,7 +105,7 @@ async fn main() -> Result<()> {
             res_out,
         } => cmd_import(mdx, mdd, out, res_out).await,
         Command::Lookup { word, db, format } => cmd_lookup(word, db, format),
-        Command::Serve { db, res, addr, web } => cmd_serve(db, res, addr, web).await,
+        Command::Serve { db, res, addr, web, ffmpeg } => cmd_serve(db, res, addr, web, ffmpeg).await,
         Command::Info { db } => cmd_info(db),
     }
 }
@@ -418,6 +422,7 @@ async fn cmd_serve(
     res: Vec<String>,
     addr: String,
     web: Option<PathBuf>,
+    ffmpeg: Option<PathBuf>,
 ) -> Result<()> {
     // Validate up front so a typo'd path fails before the dictionaries load.
     let web = match &web {
@@ -425,6 +430,19 @@ async fn cmd_serve(
             WebRoot::open(dir)
                 .with_context(|| format!("opening web assets {}", dir.display()))?,
         ),
+        None => None,
+    };
+    let ffmpeg = match ffmpeg {
+        Some(path) => {
+            let canon = path
+                .canonicalize()
+                .with_context(|| format!("resolving ffmpeg {}", path.display()))?;
+            if !canon.is_file() {
+                bail!("--ffmpeg {}: not a file", canon.display());
+            }
+            println!("transcoding undecodable audio with {}", canon.display());
+            Some(canon)
+        }
         None => None,
     };
 
@@ -536,10 +554,7 @@ async fn cmd_serve(
     if let Some(root) = &web {
         println!("serving web UI from {}", root.dir().display());
     }
-    let state = Arc::new(AppState {
-        registry: Arc::new(Registry::new(entries)),
-        web,
-    });
+    let state = Arc::new(AppState::new(Arc::new(Registry::new(entries)), web, ffmpeg));
     let app = router(state);
 
     let listener = tokio::net::TcpListener::bind(&addr)

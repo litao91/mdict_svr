@@ -427,6 +427,30 @@ curl -s 'http://127.0.0.1:8080/lookup?word=apple&format=json' | head -c 80
 This is what makes the server's own `entry://` → `/lookup?word=` cross-references
 usable when somebody opens a raw definition directly instead of the app.
 
+### `GET /transcode/{path}`
+
+Re-encodes a stored audio file that no browser can decode into PCM WAV
+(`audio/wav`), which all of them can. In practice this is Ogg-Speex `.spx`:
+CALD4, `Sound` and `Sound-en_GB` store every pronunciation in it, and the server
+would otherwise serve it as `200 audio/ogg` for `<audio>` to fail at *decode*
+time. Speex has neither a browser decoder nor a pure-Rust one, so this shells
+out to an external ffmpeg given with `serve --ffmpeg`; without it the route
+answers `501 {"error":"transcoding not configured"}` and the web UI keeps
+offering the file as a download.
+
+- The path is resolved through the resource stores exactly like the
+  [asset fallback](#get-path-asset-fallback); `?dict=<name>` scopes it. There is
+  no filesystem access, so there is nothing to traverse.
+- Inputs above 8 MiB are refused with `413`; undecodable input is `422` with the
+  decoder's stderr in `detail`.
+- Results are cached in memory keyed by `dict` + path and served with
+  `Cache-Control: public, max-age=604800` (the input is immutable).
+
+```bash
+curl -s 'http://127.0.0.1:8080/dicts' | jq .transcode      # is a decoder configured?
+curl -s -o apple.wav 'http://127.0.0.1:8080/transcode/ukappen014.spx?dict=CALD4'
+```
+
 ### How definition URLs are made to work
 
 Definitions are rewritten **on the fly** when served as HTML (and before
@@ -619,6 +643,7 @@ mdict_svr serve --db <NAME=PATH|PATH|DIR> [--db ...] [--res <NAME=PATH|PATH|DIR>
 | --- | --- | --- |
 | `--db <spec>` | yes (repeatable) | A dictionary. `NAME=PATH`, a bare `PATH` to a `.qmd` (name = file stem), **or a directory** (scanned recursively for `*.qmd`). |
 | `--res <spec>` | no (repeatable) | A resource store. `NAME=PATH` attaches to dictionary `NAME`; a bare `PATH` attaches to the sole dictionary (ambiguous with several → error); a directory is scanned for `*.res.qmd`. |
+| `--ffmpeg <PATH>` | no | ffmpeg binary used by `GET /transcode` to decode audio no browser can play (Ogg-Speex `.spx`). Without it those files stay download-only. |
 | `--web <DIR>` | no | Serve a built web UI (the `web/dist` output of the Svelte frontend) from the same origin. The directory must contain `index.html` or `serve` exits with an error. Without it the API-only behaviour is unchanged. |
 | `--addr <ADDR>` | no | Bind address, default `127.0.0.1:8080`. |
 

@@ -75,18 +75,22 @@ describe('fetch_suggest', () => {
 })
 
 describe('fetch_dicts', () => {
-  it('reads the dictionaries array', async () => {
+  it('reads the dictionaries array and the transcode capability', async () => {
     stub_fetch(() => ({
       status: 200,
-      body_text: '{"dictionaries":[{"name":"OALD9","title":"t","entries":1,"records":1,"has_resources":true}]}',
+      body_text:
+        '{"dictionaries":[{"name":"OALD9","title":"t","entries":1,"records":1,"has_resources":true}],"transcode":true}',
     }))
-    const list = await fetch_dicts()
-    expect(list).toHaveLength(1)
-    expect(list[0]?.has_resources).toBe(true)
+    const info = await fetch_dicts()
+    expect(info.dictionaries).toHaveLength(1)
+    expect(info.dictionaries[0]?.has_resources).toBe(true)
+    expect(info.transcode).toBe(true)
   })
 
   it('survives a body without the array', async () => {
     stub_fetch(() => ({ status: 200, body_text: '{}' }))
-    expect(await fetch_dicts()).toEqual([])
+    const info = await fetch_dicts()
+    expect(info.dictionaries).toEqual([])
+    expect(info.transcode).toBe(false)
   })
 })

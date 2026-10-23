@@ -13,9 +13,17 @@ interface DictsState {
   loading: boolean
   error: string | null
   loaded: boolean
+  /** The server can re-encode audio no browser can play; see `/transcode`. */
+  transcode: boolean
 }
 
-export const dicts = $state<DictsState>({ all: [], loading: false, error: null, loaded: false })
+export const dicts = $state<DictsState>({
+  all: [],
+  loading: false,
+  error: null,
+  loaded: false,
+  transcode: false,
+})
 
 let inflight: Promise<void> | null = null
 
@@ -26,8 +34,9 @@ export function load_dicts(): Promise<void> {
   dicts.loading = true
   dicts.error = null
   inflight = fetch_dicts()
-    .then((list) => {
-      dicts.all = list
+    .then((info) => {
+      dicts.all = info.dictionaries
+      dicts.transcode = info.transcode
       dicts.loaded = true
     })
     .catch((err: unknown) => {
