@@ -154,6 +154,157 @@ impl Dict {
             .map(|b| String::from_utf8_lossy(b).into_owned())
             .collect()
     }
+
+    /// The headwords immediately before and after `word` in this dictionary's
+    /// byte-sorted index, plus whether `word` is itself a headword.
+    ///
+    /// `/suggest` cannot answer this: it is a forward-only prefix scan, so
+    /// "the word before this one" is unreachable from it. Reading the index
+    /// position directly is exact and O(log n + window).
+    pub fn nearby(&self, word: &str, before: usize, after: usize) -> (bool, Vec<String>, Vec<String>) {
+        let key = normalize_key(word, self.case_sensitive, false);
+        let (exact, at) = self.qmd.position_of(key.as_bytes());
+        let decode = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+
+        let mut prev = Vec::with_capacity(before);
+        let mut i = at;
+        while prev.len() < before && i > 0 {
+            i -= 1;
+            if let Some(k) = self.qmd.key_at(i) {
+                prev.push(decode(k));
+            }
+        }
+        prev.reverse();
+
+        let mut next = Vec::with_capacity(after);
+        let mut j = if exact { at + 1 } else { at };
+        while next.len() < after {
+            match self.qmd.key_at(j) {
+                Some(k) => next.push(decode(k)),
+                None => break,
+            }
+            j += 1;
+        }
+        (exact, prev, next)
+    }
+
+    /// Headwords matching a glob pattern (`*` any run, `?` one character), in
+    /// index order. Scans every key, so it is a fallback for when the user
+    /// reaches for wildcards, not an as-you-type path.
+    pub fn search_glob(&self, pattern: &str, limit: usize) -> Vec<String> {
+        let pat = normalize_key(pattern, self.case_sensitive, false).into_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while out.len() < limit {
+            match self.qmd.key_at(i) {
+                Some(k) => {
+                    if glob_match(&pat, k) {
+                        out.push(String::from_utf8_lossy(k).into_owned());
+                    }
+                }
+                None => break,
+            }
+            i += 1;
+        }
+        out
+    }
+
+    /// Headwords within Levenshtein distance `max_dist` of `word`, closest
+    /// first, ties in index order. Also a full-index scan; meant for "did you
+    /// mean" after a prefix search came up empty.
+    pub fn fuzzy(&self, word: &str, max_dist: u8, limit: usize) -> Vec<String> {
+        let target = normalize_key(word, self.case_sensitive, false);
+        let t: Vec<char> = target.chars().collect();
+        if t.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+        let max = max_dist as usize;
+        let mut prev_row: Vec<usize> = (0..=t.len()).collect();
+        let mut cur_row = vec![0usize; t.len() + 1];
+        let mut hits: Vec<(usize, usize, u64, String)> = Vec::new();
+        let mut i = 0u64;
+        while let Some(k) = self.qmd.key_at(i) {
+            let s: Vec<char> = String::from_utf8_lossy(k).chars().collect();
+            // Length alone can put a key out of reach; skip the row work.
+            if s.len().abs_diff(t.len()) <= max {
+                let dist = levenshtein_bounded(&s, &t, max, &mut prev_row, &mut cur_row);
+                if let Some(d) = dist {
+                    // A dropped or substituted letter keeps the head of the word,
+                    // so shared-prefix length separates "apple" from the other
+                    // distance-1 candidates of "aple".
+                    let shared = s.iter().zip(t.iter()).take_while(|(a, b)| a == b).count();
+                    hits.push((d, shared, i, String::from_utf8_lossy(k).into_owned()));
+                }
+            }
+            i += 1;
+        }
+        hits.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
+        hits.truncate(limit);
+        hits.into_iter().map(|h| h.3).collect()
+    }
+}
+
+/// Glob match with `*` (any run, including empty) and `?` (one character),
+/// using the classic two-pointer algorithm with a single backtrack point.
+fn glob_match(pattern: &[u8], text: &[u8]) -> bool {
+    let (mut ti, mut pi) = (0usize, 0usize);
+    let (mut star, mut mark) = (usize::MAX, 0usize);
+    while ti < text.len() {
+        if pi < pattern.len() && (pattern[pi] == b'?' || pattern[pi] == text[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < pattern.len() && pattern[pi] == b'*' {
+            star = pi;
+            mark = ti;
+            pi += 1;
+        } else if star != usize::MAX {
+            pi = star + 1;
+            mark += 1;
+            ti = mark;
+        } else {
+            return false;
+        }
+    }
+    while pi < pattern.len() && pattern[pi] == b'*' {
+        pi += 1;
+    }
+    pi == pattern.len()
+}
+
+/// Levenshtein distance, or `None` when it must exceed `max`. The row is cut off
+/// at `max + 1` on both sides of the diagonal, which keeps a miss cheap: most
+/// keys in a 850k-headword index are nowhere near the query.
+fn levenshtein_bounded(
+    s: &[char],
+    t: &[char],
+    max: usize,
+    prev_row: &mut Vec<usize>,
+    cur_row: &mut Vec<usize>,
+) -> Option<usize> {
+    let inf = max + 1;
+    for (j, cell) in prev_row.iter_mut().enumerate().take(t.len() + 1) {
+        *cell = j.min(inf);
+    }
+    for (i, sc) in s.iter().enumerate() {
+        cur_row[0] = (i + 1).min(inf);
+        let mut row_min = cur_row[0];
+        for (j, tc) in t.iter().enumerate() {
+            let cost = if sc == tc { 0 } else { 1 };
+            let v = (prev_row[j + 1] + 1)
+                .min(cur_row[j] + 1)
+                .min(prev_row[j] + cost);
+            cur_row[j + 1] = v.min(inf);
+            row_min = row_min.min(cur_row[j + 1]);
+        }
+        // Every later cell in this row is at least row_min - 0 away from the
+        // final value's floor; a fully-saturated row can never recover.
+        if row_min >= inf {
+            return None;
+        }
+        std::mem::swap(prev_row, cur_row);
+    }
+    let d = prev_row[t.len()];
+    (d <= max).then_some(d)
 }
 
 #[cfg(test)]
@@ -238,5 +389,70 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert!(got[0].starts_with(b"<p>@@@LINK=lookalike"));
         let _ = std::fs::remove_file(&path);
+    }
+
+    fn words_dict(name: &str) -> (std::path::PathBuf, Dict) {
+        let path = tmp(name);
+        {
+            let mut b = QmdBuilder::create(&path, false, Meta::default()).unwrap();
+            for w in [
+                "apple", "apple pie", "applet", "apples", "appliance", "apply", "apricot",
+            ] {
+                b.add(w, b"<p>x</p>", KIND_HTML).unwrap();
+            }
+            b.finish().unwrap();
+        }
+        let d = Dict::open(&path).unwrap();
+        (path, d)
+    }
+
+    #[test]
+    fn nearby_reads_the_index_around_a_headword() {
+        let (_p, d) = words_dict("nearby");
+        // Byte order, not collation: "apples" sorts before "applet".
+        let (exact, prev, next) = d.nearby("apples", 2, 2);
+        assert!(exact);
+        assert_eq!(prev, vec!["apple", "apple pie"]);
+        assert_eq!(next, vec!["applet", "appliance"]);
+
+        // The first and last keys clamp instead of wrapping or panicking.
+        let (_, prev, next) = d.nearby("apple", 5, 2);
+        assert!(prev.is_empty());
+        assert_eq!(next, vec!["apple pie", "apples"]);
+        let (_, _, next) = d.nearby("apricot", 1, 5);
+        assert!(next.is_empty());
+    }
+
+    #[test]
+    fn nearby_on_a_miss_reports_the_insertion_point() {
+        let (_p, d) = words_dict("nearby_miss");
+        // "aple" is not a headword; the window is where it would sort.
+        let (exact, prev, next) = d.nearby("aple", 2, 2);
+        assert!(!exact);
+        assert!(prev.is_empty());
+        assert_eq!(next, vec!["apple", "apple pie"]);
+    }
+
+    #[test]
+    fn glob_search_handles_stars_and_questions() {
+        let (_p, d) = words_dict("glob");
+        // "apples" ends in `s`, so `app*e` skips it; "appliance" ends in `e`.
+        assert_eq!(d.search_glob("app*e", 10), vec!["apple", "apple pie", "appliance"]);
+        assert_eq!(d.search_glob("appl?", 10), vec!["apple", "apply"]);
+        assert_eq!(d.search_glob("*ant", 10), Vec::<String>::new());
+        assert!(glob_match(b"*", b"anything"));
+        assert!(!glob_match(b"a*c", b"abd"));
+    }
+
+    #[test]
+    fn fuzzy_ranks_the_intended_word_first() {
+        let (_p, d) = words_dict("fuzzy");
+        // A dropped letter: distance 1 and the longest shared prefix.
+        let hits = d.fuzzy("aple", 2, 3);
+        assert_eq!(hits[0], "apple", "the dropped-letter candidate must rank first");
+        assert!(hits.iter().all(|h| ["apple", "apples", "applet", "apply", "apple pie"].contains(&h.as_str())));
+        assert_eq!(d.fuzzy("apply", 2, 1), vec!["apply"]);
+        // Nothing within distance 1 of a nonsense string this far from any key.
+        assert!(d.fuzzy("zzzzzz", 1, 5).is_empty());
     }
 }

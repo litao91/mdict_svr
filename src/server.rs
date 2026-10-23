@@ -97,6 +97,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/lookup", get(lookup))
         .route("/word/{word}", get(lookup_path))
         .route("/suggest", get(suggest))
+        .route("/nearby", get(nearby))
         .route("/res/{dict}/{*path}", get(resource))
         // Always registered: with no `--ffmpeg` it answers 501, which is how
         // the UI learns there is nothing to convert with.
@@ -418,6 +419,17 @@ pub struct SuggestParams {
     /// Restrict to one dictionary by name; omit to search all.
     pub dict: Option<String>,
     pub limit: Option<usize>,
+    /// Opt in to the typo-tolerant pass. It scans every key in the index, so
+    /// as-you-type callers leave it off and request it once the input settles.
+    pub fuzzy: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NearbyParams {
+    pub word: Option<String>,
+    pub dict: Option<String>,
+    pub before: Option<usize>,
+    pub after: Option<usize>,
 }
 
 /// Autocomplete endpoint: given a partial input, return headwords that begin with
@@ -454,21 +466,67 @@ async fn suggest(State(st): State<Arc<AppState>>, Query(q): Query<SuggestParams>
     // Merge across dictionaries, dedupe, and keep the list globally sorted.
     let mut seen: HashSet<String> = HashSet::new();
     let mut out: Vec<String> = Vec::new();
-    for e in &entries {
-        for s in e.dict.suggest(&partial, limit) {
-            if seen.insert(s.clone()) {
-                out.push(s);
+    let wildcard = partial.contains('*') || partial.contains('?');
+    let mut mode = if wildcard { "wildcard" } else { "prefix" };
+    // The typo-tolerant additions, reported separately so a client can label
+    // them "did you mean" instead of mixing them into the prefix list.
+    let mut fuzzy_only: Vec<String> = Vec::new();
+
+    // Prefix is a binary search plus a short walk and runs inline. Wildcards and
+    // the typo fallback scan every key in the index, so they go to a blocking
+    // task rather than parking an async worker.
+    if wildcard {
+        let names: Vec<String> = entries.iter().map(|e| e.name.clone()).collect();
+        let registry = Arc::clone(&st.registry);
+        let pattern = partial.clone();
+        out = tokio::task::spawn_blocking(move || {
+            scan(&registry, &names, &pattern, limit, true, |d, q, n| d.search_glob(q, n))
+        })
+        .await
+        .unwrap_or_default();
+    } else {
+        for e in &entries {
+            for s in e.dict.suggest(&partial, limit) {
+                if seen.insert(s.clone()) {
+                    out.push(s);
+                }
+                if out.len() >= limit {
+                    break;
+                }
             }
             if out.len() >= limit {
                 break;
             }
         }
-        if out.len() >= limit {
-            break;
+        out.sort();
+        out.truncate(limit);
+
+        // A typo is otherwise a dead end: "aple" prefix-matches "aplenty" and
+        // the reader never sees "apple". Only for inputs long enough that
+        // distance 2 is meaningful, and skipped when the input is already a
+        // headword somewhere.
+        let has_exact = entries.iter().any(|e| e.dict.nearby(&partial, 0, 0).0);
+        if q.fuzzy.unwrap_or(false) && partial.chars().count() >= 4 && !has_exact {
+            let names: Vec<String> = entries.iter().map(|e| e.name.clone()).collect();
+            let registry = Arc::clone(&st.registry);
+            let word = partial.clone();
+            let found = tokio::task::spawn_blocking(move || {
+                scan(&registry, &names, &word, limit, true, |d, q, n| d.fuzzy(q, 2, n))
+            })
+            .await
+            .unwrap_or_default();
+            if !found.is_empty() {
+                mode = if out.is_empty() { "fuzzy" } else { "prefix+fuzzy" };
+                for s in &found {
+                    if seen.insert(s.clone()) {
+                        out.push(s.clone());
+                    }
+                }
+                out.truncate(limit);
+                fuzzy_only = found;
+            }
         }
     }
-    out.sort();
-    out.truncate(limit);
 
     (
         [(
@@ -482,10 +540,100 @@ async fn suggest(State(st): State<Arc<AppState>>, Query(q): Query<SuggestParams>
         Json(json!({
             "query": partial,
             "count": out.len(),
+            "mode": mode,
+            "fuzzy": fuzzy_only,
             "suggestions": out,
         })),
     )
         .into_response()
+}
+
+/// Run one whole-index search mode over the named dictionaries and merge the
+/// results, deduped and globally sorted (or distance-ordered by the closure).
+fn scan(
+    registry: &Registry,
+    names: &[String],
+    query: &str,
+    limit: usize,
+    preserve_order: bool,
+    run: impl Fn(&crate::lookup::Dict, &str, usize) -> Vec<String>,
+) -> Vec<String> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out: Vec<String> = Vec::new();
+    for name in names {
+        let Some(e) = registry.get(name) else { continue };
+        for s in run(&e.dict, query, limit) {
+            if seen.insert(s.clone()) {
+                out.push(s);
+            }
+        }
+        if out.len() >= limit {
+            break;
+        }
+    }
+    // Wildcards keep index order; fuzzy results arrive closest-match-first and
+    // sorting them alphabetically would bury the word the reader meant.
+    if !preserve_order {
+        out.sort();
+    }
+    out.truncate(limit);
+    out
+}
+
+/// The headwords sitting either side of `word` in a dictionary's byte-sorted
+/// index. `/suggest` cannot answer this — it only scans forward from a prefix —
+/// and "the words around this one" is what a paper dictionary gives you when
+/// your thumb lands on the wrong page.
+async fn nearby(State(st): State<Arc<AppState>>, Query(p): Query<NearbyParams>) -> Response {
+    let word = p.word.clone().unwrap_or_default();
+    if word.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "missing word parameter" })),
+        )
+            .into_response();
+    }
+    let before = p.before.unwrap_or(5).clamp(0, 25);
+    let after = p.after.unwrap_or(5).clamp(0, 25);
+
+    let all: Vec<&DictEntry> = st.registry.entries.iter().filter(|e| !e.dict.is_resource()).collect();
+    let chosen: &DictEntry = match p.dict.as_deref() {
+        Some(name) => match st.registry.get(name) {
+            Some(e) => e,
+            None => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({ "error": "unknown dictionary", "dict": name })),
+                )
+                    .into_response()
+            }
+        },
+        // Prefer a dictionary that actually has the word, so the window sits in
+        // the index the reader is reading; fall back to the first loaded one.
+        None => match all.iter().find(|e| e.dict.nearby(&word, 0, 0).0) {
+            Some(e) => e,
+            None => match all.first() {
+                Some(e) => e,
+                None => {
+                    return (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(json!({ "error": "no dictionaries loaded" })),
+                    )
+                        .into_response()
+                }
+            },
+        },
+    };
+
+    let (exact, prev, next) = chosen.dict.nearby(&word, before, after);
+    Json(json!({
+        "word": word,
+        "dict": chosen.name,
+        "exact": exact,
+        "prev": prev,
+        "next": next,
+    }))
+    .into_response()
 }
 
 #[derive(Debug, Deserialize)]

@@ -291,6 +291,7 @@ touches the TEXT arena.
 | `q` | no | `""` | The partial input. `word` and `prefix` are accepted as aliases (first present wins). Missing/empty returns the alphabetically first headwords. |
 | `dict` | no | *all* | Restrict to one dictionary by name. Unknown name → `404`. Omit to search every dictionary. |
 | `limit` | no | `20` | Max suggestions, clamped to `1..=100`. |
+| `fuzzy` | no | `false` | Also run a typo-tolerant pass (Levenshtein ≤ 2, closest first, ties by shared prefix) when the input is at least 4 characters and is not itself a headword. Scans every key, so leave it off for keystrokes and turn it on once the input settles. |
 
 **Response** `200 application/json`
 
@@ -298,12 +299,21 @@ touches the TEXT arena.
 {
   "query": "app",
   "count": 8,
+  "mode": "prefix",
+  "fuzzy": [],
   "suggestions": [
     "apparatus", "appear", "appearance", "appendix",
     "appetite", "applaud", "apple", "appreciate"
   ]
 }
 ```
+
+- `mode` says how the list was produced: `prefix`, `wildcard` (the query
+  contains `*` or `?`, matched against every headword), `fuzzy`, or
+  `prefix+fuzzy` when both contributed.
+- `fuzzy` carries only the typo-tolerant additions, in distance order, so a
+  client can present them as "did you mean" instead of mixing them into the
+  prefix list. With `mode: "wildcard"` it is empty.
 
 - `suggestions` are the **stored (normalized) headwords** — lowercased for
   case-insensitive dictionaries — i.e. exactly the strings `/lookup?word=…`
@@ -327,6 +337,43 @@ Unlike `/lookup`, no-match is **not** an error: it returns `200` with an empty
 curl -s 'http://127.0.0.1:8080/suggest?q=app&limit=10'
 curl -s 'http://127.0.0.1:8080/suggest?q=ban&dict=oxford'
 curl -s 'http://127.0.0.1:8080/suggest?prefix=fruit'   # alias
+curl -s 'http://127.0.0.1:8080/suggest?q=app*e'        # wildcard, full-index scan
+curl -s 'http://127.0.0.1:8080/suggest?q=aple&fuzzy=true'   # "did you mean apple"
+
+### `GET /nearby`
+
+The headwords sitting either side of a word in one dictionary's byte-sorted
+index — what a paper dictionary gives you when your thumb lands on the wrong
+page. `/suggest` cannot answer this: it only scans forward from a prefix, so
+"the headword before this one" is unreachable from it. This reads the index
+position directly (binary search plus a short walk in each direction).
+
+| Name | Required | Default | Description |
+| --- | --- | --- | --- |
+| `word` | yes | — | The headword to centre on. Need not exist in the dictionary. |
+| `dict` | no | *first that has `word`, else first loaded* | Which dictionary's index to read. |
+| `before` / `after` | no | `5` | Window size each way, clamped to `0..=25`. |
+
+```json
+{
+  "word": "apple",
+  "dict": "OALD9",
+  "exact": true,
+  "prev": ["applauded", "applauding", "applauds", "applause"],
+  "next": ["apple cart", "apple cider", "apple pie", "apple-cheeked"]
+}
+```
+
+`exact` says whether `word` is itself a headword; when it is not, the window is
+the insertion point, which is what makes this a "did you mean" primitive too.
+`prev` is ascending, so the immediate predecessor is its last element.
+
+```bash
+curl -s 'http://127.0.0.1:8080/nearby?word=apple&dict=OALD9&before=2&after=2'
+```
+
+**Errors** — `400` without `word`; `404` for an unknown `dict`; `503` with no
+dictionaries loaded.
 ```
 
 ---

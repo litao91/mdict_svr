@@ -482,6 +482,20 @@ impl Qmd {
         }
         out
     }
+
+    /// The stored key at index `i` in byte-sorted order, if it exists.
+    pub fn key_at(&self, i: u64) -> Option<&[u8]> {
+        (i < self.s.num_keys).then(|| self.key_bytes(i))
+    }
+
+    /// Whether `norm_key` is a stored key, and the index of the first key that
+    /// sorts >= it either way. The index is what makes "the words around this
+    /// one" an O(log n + window) read instead of a prefix scan.
+    pub fn position_of(&self, norm_key: &[u8]) -> (bool, u64) {
+        let i = self.lower_bound(norm_key);
+        let exact = i < self.s.num_keys && self.key_bytes(i) == norm_key;
+        (exact, i)
+    }
 }
 
 #[cfg(test)]
