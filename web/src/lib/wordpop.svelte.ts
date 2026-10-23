@@ -33,11 +33,16 @@ export function open_wordpop(word: string, x: number, y: number, dict: string | 
   void fetch_markdown(word, dict)
     .then((md) => {
       if (wordpop.current?.word !== word || seq !== id) return
+      // The preview is prose, not source: drop the Markdown link/audio markup
+      // (`[audio](/res/…/x.mp3)`) before showing it.
       const lines = (md ?? '')
+        .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+        .replace(/[*_`]/g, '')
         .split('\n')
         .map((l) => l.trim())
         .filter((l) => l && !l.startsWith('#') && !l.startsWith('→'))
-      wordpop.current.preview = lines.slice(0, 2).join(' ').slice(0, 180) || null
+      wordpop.current.preview =
+        lines.slice(0, 2).join(' ').replace(/\s+/g, ' ').slice(0, 180) || null
       wordpop.current.loading = false
     })
     .catch(() => {
