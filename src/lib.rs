@@ -8,5 +8,6 @@ pub mod md;
 pub mod mdx;
 pub mod qmd;
 pub mod server;
+pub mod web;
 
 pub use error::{Error, Result};

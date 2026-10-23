@@ -385,6 +385,48 @@ the browser requests from this origin.
 curl -i 'http://127.0.0.1:8080/media/english/thumb/f/fru/fruit/fruit.jpg'
 ```
 
+### The web UI routes (only with `--web`)
+
+With `--web <DIR>` the server also serves a single-page app from the same origin.
+Only three routes are added, and only when the flag is given:
+
+| Route | Response | Caching |
+| --- | --- | --- |
+| `GET /` and `GET /index.html` | the app shell | `Cache-Control: no-cache` |
+| `GET /assets/{path}` | hashed build output from `<DIR>/assets/` | `max-age=31536000, immutable` |
+
+**The app keeps all of its state in the query string** (`/?word=apple&dict=OALD9`)
+and has no path-based client routes of its own. That is deliberate: definitions
+reference assets at arbitrary root paths (`/media/english/thumb/…/fruit.jpg`,
+`/txbapple.jpg`), so a client route like `/word/{word}` in the browser would be
+ambiguous with them.
+
+**Asset shadowing.** A dictionary could in principle store a resource literally
+keyed `index.html` or under `assets/`. Both handlers therefore fall through to the
+[asset fallback](#get-path-asset-fallback) when the file is not present in
+`<DIR>`, so a stored asset wins over a 404 and route priority ceases to matter.
+Paths are joined with a component-wise check (`..`, `.`, absolute paths and
+percent-decoded traversal are all rejected) and the result is canonicalized and
+required to stay inside `<DIR>`.
+
+**Opening a raw definition in a browser.** When `--web` is set, a request to
+`/word/{word}` or `/lookup` that carries `Sec-Fetch-Dest: document` (a real
+top-level navigation — `curl`, `fetch()` and XHR never send it) and no explicit
+`format` parameter answers `302` to `/?word=…&dict=…`. Programmatic clients see no
+change:
+
+```bash
+# a browser navigation lands in the app
+curl -i -H 'Sec-Fetch-Dest: document' 'http://127.0.0.1:8080/word/apple'
+#   → 302, Location: /?word=apple
+
+# a programmatic client is unaffected
+curl -s 'http://127.0.0.1:8080/lookup?word=apple&format=json' | head -c 80
+```
+
+This is what makes the server's own `entry://` → `/lookup?word=` cross-references
+usable when somebody opens a raw definition directly instead of the app.
+
 ### How definition URLs are made to work
 
 Definitions are rewritten **on the fly** when served as HTML (and before
@@ -577,6 +619,7 @@ mdict_svr serve --db <NAME=PATH|PATH|DIR> [--db ...] [--res <NAME=PATH|PATH|DIR>
 | --- | --- | --- |
 | `--db <spec>` | yes (repeatable) | A dictionary. `NAME=PATH`, a bare `PATH` to a `.qmd` (name = file stem), **or a directory** (scanned recursively for `*.qmd`). |
 | `--res <spec>` | no (repeatable) | A resource store. `NAME=PATH` attaches to dictionary `NAME`; a bare `PATH` attaches to the sole dictionary (ambiguous with several → error); a directory is scanned for `*.res.qmd`. |
+| `--web <DIR>` | no | Serve a built web UI (the `web/dist` output of the Svelte frontend) from the same origin. The directory must contain `index.html` or `serve` exits with an error. Without it the API-only behaviour is unchanged. |
 | `--addr <ADDR>` | no | Bind address, default `127.0.0.1:8080`. |
 
 **Directory scanning.** When a `--db` (or `--res`) path is a directory it is

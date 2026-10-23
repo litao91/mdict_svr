@@ -138,17 +138,62 @@ short walk) so cost is independent of record size. It searches all dictionaries
 by default (deduped, sorted), or one with `dict=`; `limit` defaults to 20 and is
 capped at 100. An empty `q` returns the alphabetically first headwords.
 
+## Web UI
+
+`web/` is a Svelte 5 + Vite frontend for the API above: per-dictionary tabs,
+pronunciation audio that plays in place, cross-references that navigate without a
+reload, hover previews, an image lightbox, a command palette, find-in-entry, and
+light/dark themes. It sanitizes the stored publisher markup before injecting it
+(their `<base>`, `<link>` and 55k inline `onclick` handlers never reach the DOM)
+and remaps the publishers' inline colours so every dictionary stays legible on a
+dark background.
+
+Audio that no browser can decode is detected up front and degraded explicitly:
+CALD4 and the Sound libraries store Ogg-Speex `.spx`, which the server reports as
+`200 audio/ogg` and `<audio>` then fails to *decode*, so the player explains the
+codec and offers the file as a download instead of failing silently.
+
+```bash
+cd web
+npm install
+npm run dev          # http://127.0.0.1:5173, proxies everything else to :8080
+npm run build        # → web/dist
+npm test             # vitest + jsdom unit tests
+npm run check        # svelte-check
+npm run test:browser # headless-Chromium pass; needs a running `serve --web`
+```
+
+Serve the build from the Rust binary so one command gives one origin:
+
+```bash
+mdict_svr serve --db ./data --web web/dist --addr 127.0.0.1:8080
+```
+
+`--web` adds exactly three routes — `/`, `/index.html` (the shell, `no-cache`) and
+`/assets/*` (hashed output, immutable) — and both fall through to the asset
+fallback when the file is not in the build directory, so a dictionary asset
+literally keyed `index.html` or under `assets/` still resolves. The app keeps its
+state in the query string (`/?word=apple&dict=OALD9`) precisely so it cannot
+collide with dictionary asset paths. With `--web` set, opening `/word/apple` or
+`/lookup?word=apple` in a real browser (`Sec-Fetch-Dest: document`) redirects
+into the app; `curl` and `fetch()` are unaffected. See `docs/API.md`.
+
 ## Tests
 
 ```bash
-cargo test
+cargo test          # Rust: container, decoding, lookup, HTML→MD, web serving
+cd web && npm test  # frontend: sanitizer, URL rewriting, colours, API outcomes
 ```
 
-Covers RIPEMD128 known-answer vectors, the index cipher round-trip, zlib/stored
-block decoding, `qmd` round-trip (including duplicate keys and a >64 KiB record
-that would overflow qingjian's `u16` length), key normalization, `@@@LINK`
-redirect resolution, and HTML→MD. The Markdown tests are regression tests built
-from real snippets of each dictionary in `./data`; see `src/md/tests.rs`.
+The Rust suite covers RIPEMD128 known-answer vectors, the index cipher
+round-trip, zlib/stored block decoding, `qmd` round-trip (including duplicate keys
+and a >64 KiB record that would overflow qingjian's `u16` length), key
+normalization, `@@@LINK` redirect resolution, and HTML→MD. The Markdown tests are
+regression tests built from real snippets of each dictionary in `./data`; see
+`src/md/tests.rs`. The frontend tests do the same for the sanitizer: real records
+from all five markup vocabularies, asserting the publisher stylesheet, scripts,
+`<base>` and inline handlers are gone while layout styles and readable text
+survive.
 
 ## Notes / limitations
 

@@ -1,0 +1,695 @@
+/*
+ * Dictionary entry styling.
+ *
+ * Five markup vocabularies coexist here and must all look like the same app:
+ *
+ *   oald9    Oxford Dictionaries Online — class-rich, `<div>`-based
+ *   oxench8  OALD8C — class-rich but built entirely out of `<span>`s
+ *   col      Youdao Collins — `<ul><li><p>` with `.collinsOrder` sense numbers
+ *   plain    CALD4, COBUILD8, oxfordPrimary, XinNiujin — no classes at all;
+ *            structure comes from `<br>`, `<font color>` and
+ *            `<span style="display:block">`
+ *
+ * Vocabulary is detected from the content, not the dictionary name, and applied
+ * as `.dict--<vocabulary>` on the host. The publisher's own stylesheet is
+ * stripped during sanitization (`col.res.qmd` really does serve
+ * `result-min.css`), so everything here is written from scratch.
+ */
+
+.entry {
+  --font-scale: 1;
+  position: relative;
+  font-family: var(--read-font);
+  font-size: calc(1rem * var(--font-scale));
+  line-height: 1.72;
+  color: var(--fg);
+  overflow-wrap: break-word;
+}
+
+.entry :where(h1, h2, h3, h4, h5, h6) {
+  font-family: var(--ui-font);
+}
+
+.entry p {
+  margin: 0 0 0.55rem;
+}
+
+.entry p:last-child {
+  margin-bottom: 0;
+}
+
+/* ---- publisher colors ---------------------------------------------------- */
+
+/* The sanitizer lifts `font[color]` and inline `style="color:…"` into a
+   light/dark pair, because inline styles beat author CSS and cannot be
+   overridden — and `#0`, `navy` and `black` would vanish on a dark surface. */
+.entry [data-c] {
+  color: var(--c-light);
+}
+
+html[data-theme='dark'] .entry [data-c] {
+  color: var(--c-dark);
+}
+
+/* ---- links --------------------------------------------------------------- */
+
+.entry a {
+  color: var(--accent);
+  text-decoration: none;
+  text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  text-underline-offset: 2px;
+  border-radius: 2px;
+  transition: background-color 0.12s, color 0.12s;
+}
+
+.entry a:hover {
+  text-decoration: underline;
+  background: var(--accent-soft);
+}
+
+/* In-entry cross-references read as chips so they are distinguishable from the
+   prose they sit inside. */
+.entry a[data-word] {
+  padding: 0 0.18em;
+  margin: 0 -0.18em;
+  white-space: nowrap;
+}
+
+.entry a[data-dead] {
+  color: var(--fg-faint);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  cursor: not-allowed;
+}
+
+.entry a[data-dead]:hover {
+  background: none;
+}
+
+/* ---- pronunciation audio ------------------------------------------------- */
+
+.entry a[data-audio] {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  vertical-align: baseline;
+  padding: 0.02rem 0.42rem;
+  margin: 0 0.12rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  color: var(--fg-muted);
+  font-family: var(--ui-font);
+  font-size: 0.72em;
+  font-weight: 550;
+  line-height: 1.7;
+  text-decoration: none;
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s, background-color 0.12s;
+}
+
+.entry a[data-audio]:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+  text-decoration: none;
+}
+
+.entry a[data-audio].is-playing {
+  border-color: var(--playing);
+  color: var(--playing);
+  background: color-mix(in srgb, var(--playing) 12%, transparent);
+}
+
+/* A codec no browser can decode: visibly different, so the reader is not left
+   clicking a speaker and hearing nothing. */
+.entry a[data-audio][data-playable='0'] {
+  border-style: dashed;
+  color: var(--fg-faint);
+  opacity: 0.85;
+}
+
+.entry a[data-audio][data-playable='0']:hover {
+  border-color: var(--border-strong);
+  color: var(--fg-muted);
+  background: var(--bg-sunken);
+}
+
+.audio-icon {
+  flex: none;
+  fill: currentColor;
+}
+
+/* ---- images -------------------------------------------------------------- */
+
+.entry img {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-sm);
+  cursor: zoom-in;
+  vertical-align: middle;
+}
+
+.entry img.img-broken {
+  width: 3.5rem;
+  height: 2.25rem;
+  cursor: default;
+  border: 1px dashed var(--border-strong);
+  background: var(--bg-sunken);
+}
+
+/* ---- rules and tables ---------------------------------------------------- */
+
+.entry hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 1.4rem 0;
+}
+
+.entry table,
+.entry .table {
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+  font-size: 0.92em;
+}
+
+.entry :where(td, th, .td, .th) {
+  padding: 0.3rem 0.7rem 0.3rem 0;
+  text-align: left;
+  vertical-align: top;
+}
+
+.entry :where(th, .th) {
+  font-family: var(--ui-font);
+  font-size: 0.78em;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+  border-bottom: 1px solid var(--border);
+}
+
+.entry :where(tr, .tr) {
+  display: block;
+  margin: 0.2rem 0;
+}
+
+/* ---- shared inline roles ------------------------------------------------- */
+
+.entry :where(.pos, .pos-g, .prefix, .gram, .ndv) {
+  font-family: var(--ui-font);
+  font-style: italic;
+}
+
+.entry :where(.phon, .phon-gb, .phon-us, .z_ei-g, .separator, .phonetic) {
+  font-family: var(--ipa-font);
+  letter-spacing: 0.01em;
+}
+
+.entry .label-g,
+.entry .reg,
+.entry .geo,
+.entry .gr,
+.entry .gl,
+.entry .r,
+.entry .g {
+  font-family: var(--ui-font);
+  font-size: 0.85em;
+  font-style: italic;
+  color: var(--fg-muted);
+}
+
+/* Chinese / translation glosses get their own voice so a bilingual entry reads
+   as two layers rather than one run-on sentence. */
+.entry :where(.chn, .tx) {
+  display: block;
+  margin: 0.15rem 0 0.5rem;
+  font-family: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC',
+    var(--ui-font);
+  font-size: 0.92em;
+  line-height: 1.65;
+  color: var(--fg-muted);
+}
+
+/* ---- OALD9 --------------------------------------------------------------- */
+
+/*
+ * OALD9's records are snapshots of a web app: they carry buttons for a site that
+ * is not here, and they repeat the headword's part of speech and pronunciation
+ * twice, once for the collapsed bar and once for the expanded one. Everything
+ * below is lifted from the publisher's own `data/OALD9.css` — hiding it with CSS
+ * rather than deleting it in the sanitizer keeps the DOM faithful (so audio and
+ * anchor tagging still sees every node) and matches how Oxford renders it.
+ *
+ * Deliberately NOT ported: `.collapse .body{display:none}` (OALD9.css:138). The
+ * real site reveals those panels with a JS class toggle; here the text is shown,
+ * because dropping it would delete whole sections of the entry.
+ */
+.dict--oald9 .responsive_display_inline_on_smartphone,
+.dict--oald9 .pron-link,
+.dict--oald9 .ox-enlarge-label,
+.dict--oald9 div[class='btn icon-left-colapse wl-add'],
+.dict--oald9 .webtop-g .z,
+.dict--oald9 .bre,
+.dict--oald9 .name,
+.dict--oald9 .nbsp,
+.dict--oald9 .z_gr_br,
+.dict--oald9 .z_n + .z,
+.dict--oald9 .h-g + .z,
+.dict--oald9 #ox-enlarge + .z,
+.dict--oald9 .top-g .pos-g,
+.dict--oald9 .pron-gs .wrap,
+.dict--oald9 .blockquote .wrap,
+.dict--oald9 li.sn-g > .num,
+.dict--oald9 span[hide~='y'],
+.dict--oald9 .sep + .sep,
+.dict--oald9 .dr-gs .clear,
+.dict--oald9 .idm-g .top-container .clear,
+.dict--oald9 .idm-g .top-container .btn,
+.dict--oald9 .pv-g .top-container .clear,
+.dict--oald9 .pv-g .top-container .btn,
+.dict--oald9 .top-container + .pv-gs > .heading,
+.dict--oald9 .top-container + .wf-g > .heading {
+  display: none;
+}
+
+/* The Oxford 3000 marker is an empty anchor painted by a background image
+   (OALD9.css:15-17); without this it is an invisible `&nbsp;`. */
+.dict--oald9 .oxford3000,
+.dict--oald9 .academic {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  border-radius: 1em;
+  background-color: var(--accent);
+  background-size: 100%;
+  background-repeat: no-repeat;
+  vertical-align: -0.1em;
+}
+
+/* OALD9 nests its senses as `<span class="sn-gs"><li class="sn-g">`, which the
+   HTML parser foster-parents into a bare `<li>` with no list around it. The
+   sense number already labels it, so the orphan bullet is noise. */
+.entry li.sn-g,
+.entry .sn-gs > li {
+  list-style: none;
+}
+
+.dict--oald9 .h {
+  font-family: var(--read-font);
+  font-size: 1.6em;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+  color: var(--fg);
+}
+
+.dict--oald9 .top-container,
+.dict--oald9 .webtop-g {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 0.65rem;
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.65rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.dict--oald9 .pron-gs {
+  font-size: 0.9em;
+  color: var(--fg-muted);
+}
+
+.dict--oald9 .def {
+  color: var(--fg);
+}
+
+/* `.x-gs` is the example list; each `.x-g` is one example. */
+.dict--oald9 .x-gs {
+  margin: 0.5rem 0 0.75rem;
+  padding-left: 0.95rem;
+  border-left: 2px solid var(--border);
+}
+
+.dict--oald9 .x-g {
+  margin: 0.2rem 0;
+  font-size: 0.95em;
+  color: var(--fg-muted);
+}
+
+.dict--oald9 .x {
+  font-style: italic;
+}
+
+.dict--oald9 .sn-g {
+  margin: 0.9rem 0;
+}
+
+.dict--oald9 .num {
+  font-family: var(--ui-font);
+  font-size: 0.8em;
+  font-weight: 650;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  margin-right: 0.3rem;
+}
+
+.dict--oald9 .xr-gs {
+  display: block;
+  margin: 0.6rem 0;
+  padding: 0.45rem 0.7rem;
+  background: var(--bg-sunken);
+  border-radius: var(--radius-sm);
+  font-family: var(--ui-font);
+  font-size: 0.85em;
+  line-height: 1.9;
+}
+
+.dict--oald9 .xr-gs .prefix {
+  font-style: normal;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  font-size: 0.85em;
+  color: var(--fg-faint);
+  margin-right: 0.4rem;
+}
+
+.dict--oald9 :where(.heading, .revout) {
+  display: block;
+  margin: 1.6rem 0 0.5rem;
+  font-family: var(--ui-font);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.dict--oald9 .idm,
+.dict--oald9 .idm-g {
+  margin-top: 0.9rem;
+}
+
+.dict--oald9 .idm {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.dict--oald9 .wfw-g {
+  display: block;
+  font-family: var(--ui-font);
+  font-size: 0.88em;
+  margin: 0.15rem 0;
+}
+
+.dict--oald9 .wfp {
+  color: var(--fg-faint);
+  font-style: italic;
+  margin-left: 0.3rem;
+}
+
+.dict--oald9 .etym_i {
+  font-style: italic;
+}
+
+.dict--oald9 .lang {
+  font-variant: small-caps;
+  letter-spacing: 0.03em;
+}
+
+/* ---- OxEnCh8 ------------------------------------------------------------- */
+
+/* `简` toggles simplified Chinese on the publisher's site; `.clear` is an empty
+   clearfix. Both are dead here. */
+.dict--oxench8 .simplized-btn,
+.dict--oxench8 .clear {
+  display: none;
+}
+
+.dict--oxench8 .no-dot-h {
+  display: block;
+  font-family: var(--read-font);
+  font-size: 1.6em;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+  margin-bottom: 0.3rem;
+}
+
+.dict--oxench8 .top-g {
+  display: block;
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.65rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.dict--oxench8 .ei-g {
+  font-size: 0.9em;
+  color: var(--fg-muted);
+}
+
+.dict--oxench8 .pos {
+  font-family: var(--ui-font);
+  font-style: italic;
+  font-size: 0.9em;
+}
+
+.dict--oxench8 .infl {
+  display: block;
+  font-family: var(--ui-font);
+  font-size: 0.85em;
+  color: var(--fg-faint);
+  margin: 0.2rem 0 0.4rem;
+}
+
+.dict--oxench8 .inflection {
+  font-style: italic;
+}
+
+.dict--oxench8 .x-g {
+  margin: 0.3rem 0 0.3rem 0.95rem;
+  padding-left: 0.7rem;
+  border-left: 2px solid var(--border);
+  font-size: 0.95em;
+  font-style: italic;
+  color: var(--fg-muted);
+}
+
+.dict--oxench8 :where(.heading, .revout) {
+  display: block;
+  margin: 1.6rem 0 0.5rem;
+  font-family: var(--ui-font);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.dict--oxench8 .id {
+  display: block;
+  font-weight: 600;
+  margin-top: 0.9rem;
+}
+
+.dict--oxench8 .z_n {
+  font-family: var(--ui-font);
+  font-size: 0.8em;
+  font-weight: 650;
+  color: var(--accent);
+  margin-right: 0.3rem;
+}
+
+.dict--oxench8 .sense-g,
+.dict--oxench8 .def-g {
+  display: block;
+  margin: 0.5rem 0;
+}
+
+.dict--oxench8 .unbox {
+  display: block;
+  margin: 1rem 0;
+  padding: 0.7rem 0.9rem;
+  background: var(--bg-sunken);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+.dict--oxench8 .help {
+  display: block;
+  margin: 0.6rem 0;
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  font-family: var(--ui-font);
+  font-size: 0.88em;
+}
+
+/* ---- col (Youdao Collins) ------------------------------------------------ */
+
+.dict--col .title {
+  font-family: var(--read-font);
+  font-weight: 600;
+}
+
+.dict--col h4 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 0.6rem;
+  margin: 0 0 0.75rem;
+  padding-bottom: 0.65rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 1.5rem;
+  letter-spacing: -0.015em;
+}
+
+.dict--col .phonetic {
+  font-family: var(--ipa-font);
+  font-size: 0.62em;
+  font-style: normal;
+  color: var(--fg-muted);
+}
+
+.dict--col .rank,
+.dict--col .pattern {
+  font-family: var(--ui-font);
+  font-size: 0.48em;
+  font-weight: 500;
+  color: var(--fg-faint);
+}
+
+.dict--col .collinsMajorTrans {
+  margin-bottom: 0.4rem;
+}
+
+.dict--col .collinsOrder {
+  font-family: var(--ui-font);
+  font-size: 0.75em;
+  font-weight: 700;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  margin-right: 0.35rem;
+}
+
+.dict--col .additional {
+  font-family: var(--ui-font);
+  font-size: 0.8em;
+  font-style: italic;
+  color: var(--fg-muted);
+  margin-right: 0.3rem;
+}
+
+.dict--col ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dict--col li {
+  margin: 0.9rem 0;
+  padding-left: 0.95rem;
+  border-left: 2px solid var(--border);
+}
+
+.dict--col .examples {
+  margin: 0.35rem 0 0.35rem 0.4rem;
+  font-size: 0.93em;
+}
+
+.dict--col .examples p {
+  margin: 0.1rem 0;
+}
+
+.dict--col .examples p:first-child {
+  font-style: italic;
+  color: var(--fg-muted);
+}
+
+.dict--col .examples p:last-child {
+  font-family: 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC',
+    var(--ui-font);
+  font-size: 0.95em;
+  color: var(--fg-faint);
+}
+
+/* `.title.trans-tip` is a section banner ("VERB USES"), not the headword. */
+.dict--col .trans-tip {
+  margin: 1.6rem 0 0.5rem;
+  font-family: var(--ui-font);
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+/* ---- plain (CALD4, COBUILD8, oxfordPrimary, XinNiujin) ------------------- */
+
+/* These carry no classes, so structure comes from `<br>` and from spans the
+   publisher promoted to block level with an inline style. */
+.dict--plain span[style*='display:block'],
+.dict--plain span[style*='display: block'] {
+  margin: 0.3rem 0;
+  padding-left: 0.85rem;
+  border-left: 2px solid var(--border);
+}
+
+.dict--plain b,
+.dict--plain strong {
+  font-weight: 650;
+}
+
+.dict--plain u {
+  text-decoration: none;
+  font-family: var(--ui-font);
+  font-size: 0.78em;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.dict--plain sup,
+.dict--plain sub {
+  font-size: 0.72em;
+}
+
+/* ---- table of contents / anchors ---------------------------------------- */
+
+.anchor-flash {
+  animation: anchor-flash 1.2s ease-out;
+  border-radius: 3px;
+}
+
+@keyframes anchor-flash {
+  0%,
+  45% {
+    background: var(--mark);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+mark {
+  background: var(--mark);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+/* ---- print --------------------------------------------------------------- */
+
+@media print {
+  .entry a[data-audio],
+  .entry a[data-dead] {
+    display: none;
+  }
+  .entry a {
+    color: inherit;
+    text-decoration: none;
+  }
+}

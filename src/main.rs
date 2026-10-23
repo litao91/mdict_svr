@@ -9,6 +9,7 @@ use mdict_svr::build;
 use mdict_svr::lookup::Dict;
 use mdict_svr::md::{decode_record, html_to_markdown};
 use mdict_svr::server::{router, AppState, DictEntry, Registry};
+use mdict_svr::web::WebRoot;
 
 #[derive(Parser)]
 #[command(
@@ -68,6 +69,10 @@ enum Command {
         /// Socket address to bind
         #[arg(long, default_value = "127.0.0.1:8080")]
         addr: String,
+        /// Directory of built web UI assets to serve alongside the API (the
+        /// output of `npm run build` in `web/`). Must contain `index.html`.
+        #[arg(long)]
+        web: Option<PathBuf>,
     },
     /// Print database metadata as JSON
     Info {
@@ -96,7 +101,8 @@ async fn main() -> Result<()> {
             res_out,
         } => cmd_import(mdx, mdd, out, res_out).await,
         Command::Lookup { word, db, format } => cmd_lookup(word, db, format),
-        Command::Serve { db, res, addr } => cmd_serve(db, res, addr).await,        Command::Info { db } => cmd_info(db),
+        Command::Serve { db, res, addr, web } => cmd_serve(db, res, addr, web).await,
+        Command::Info { db } => cmd_info(db),
     }
 }
 
@@ -407,7 +413,21 @@ fn scan_qmd_dir(root: &Path) -> Result<(Vec<(String, PathBuf)>, Vec<ResSpec>)> {
     Ok((dicts, resources))
 }
 
-async fn cmd_serve(db: Vec<String>, res: Vec<String>, addr: String) -> Result<()> {
+async fn cmd_serve(
+    db: Vec<String>,
+    res: Vec<String>,
+    addr: String,
+    web: Option<PathBuf>,
+) -> Result<()> {
+    // Validate up front so a typo'd path fails before the dictionaries load.
+    let web = match &web {
+        Some(dir) => Some(
+            WebRoot::open(dir)
+                .with_context(|| format!("opening web assets {}", dir.display()))?,
+        ),
+        None => None,
+    };
+
     let mut dict_specs: Vec<(String, PathBuf)> = Vec::new();
     let mut res_specs: Vec<ResSpec> = Vec::new();
 
@@ -513,8 +533,12 @@ async fn cmd_serve(db: Vec<String>, res: Vec<String>, addr: String) -> Result<()
     }
 
     let total = entries.len();
+    if let Some(root) = &web {
+        println!("serving web UI from {}", root.dir().display());
+    }
     let state = Arc::new(AppState {
         registry: Arc::new(Registry::new(entries)),
+        web,
     });
     let app = router(state);
 

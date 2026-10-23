@@ -52,6 +52,9 @@ impl Registry {
 /// Shared server state.
 pub struct AppState {
     pub registry: Arc<Registry>,
+    /// Built web UI to serve alongside the API (`serve --web`). `None` leaves
+    /// routing exactly as it was: `/` falls through to the resource lookup.
+    pub web: Option<crate::web::WebRoot>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,16 +66,26 @@ pub struct LookupParams {
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/health", get(health))
         .route("/info", get(info))
         .route("/dicts", get(dicts))
         .route("/lookup", get(lookup))
         .route("/word/{word}", get(lookup_path))
         .route("/suggest", get(suggest))
-        .route("/res/{dict}/{*path}", get(resource))
-        .fallback(fallback_resource)
-        .with_state(state)
+        .route("/res/{dict}/{*path}", get(resource));
+    // Only with `--web`. The SPA holds its state in the query string and has no
+    // path routes, so these three cannot collide with the dictionary asset paths
+    // the fallback below serves.
+    let router = if state.web.is_some() {
+        router
+            .route("/", get(crate::web::index))
+            .route("/index.html", get(crate::web::index))
+            .route("/assets/{*path}", get(crate::web::asset))
+    } else {
+        router
+    };
+    router.fallback(fallback_resource).with_state(state)
 }
 
 async fn health() -> &'static str {
@@ -133,6 +146,46 @@ fn parse_format(fmt: Option<&str>, headers: &HeaderMap) -> Format {
         }
     }
     Format::Html
+}
+
+/// True for a real top-level browser navigation. `curl`, `fetch()` and XHR never
+/// send `Sec-Fetch-Dest`, so programmatic clients are unaffected by the redirect
+/// below.
+fn is_browser_navigation(headers: &HeaderMap) -> bool {
+    headers
+        .get("sec-fetch-dest")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("document"))
+}
+
+/// Percent-encode a query-string value. Everything outside RFC 3986's unreserved
+/// set is escaped, which covers the spaces, apostrophes, `#` and CJK that real
+/// headwords and dictionary names contain.
+fn encode_query_value(s: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(s.len() * 3);
+    for &b in s.as_bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push('%');
+            out.push(HEX[(b >> 4) as usize] as char);
+            out.push(HEX[(b & 0xf) as usize] as char);
+        }
+    }
+    out
+}
+
+/// With `--web`, a person opening `/word/apple` or `/lookup?word=apple` in a
+/// browser wants the UI, not a dump of publisher markup with no stylesheet. Send
+/// them into the SPA, which fetches the same endpoint itself.
+fn redirect_to_ui(word: &str, dict: Option<&str>) -> Response {
+    let mut target = format!("/?word={}", encode_query_value(word));
+    if let Some(d) = dict {
+        target.push_str("&dict=");
+        target.push_str(&encode_query_value(d));
+    }
+    (StatusCode::FOUND, [(header::LOCATION, target)]).into_response()
 }
 
 /// Rewrite MDict's internal URL schemes in a definition so a browser can actually
@@ -297,6 +350,9 @@ async fn lookup(
                 .into_response()
         }
     };
+    if st.web.is_some() && q.format.is_none() && is_browser_navigation(&headers) {
+        return redirect_to_ui(&word, q.dict.as_deref());
+    }
     let format = parse_format(q.format.as_deref(), &headers);
     respond_definition(&st, &word, q.dict.as_deref(), format).await
 }
@@ -309,6 +365,9 @@ async fn lookup_path(
 ) -> Response {
     if st.registry.is_empty() {
         return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"no dictionaries loaded"}))).into_response();
+    }
+    if st.web.is_some() && q.format.is_none() && is_browser_navigation(&headers) {
+        return redirect_to_ui(&word, q.dict.as_deref());
     }
     let format = parse_format(q.format.as_deref(), &headers);
     respond_definition(&st, &word, q.dict.as_deref(), format).await
@@ -404,7 +463,10 @@ pub struct ResourceQuery {
 
 /// Serve a resource by path. With `dict`, use that dictionary's store; without it,
 /// search every loaded resource store in registry order (first match wins).
-async fn serve_resource(st: &AppState, dict: Option<&str>, path: &str) -> Response {
+///
+/// `crate::web` calls this too, so an SPA route that matches no built file still
+/// resolves a dictionary asset keyed the same way.
+pub(crate) async fn serve_resource(st: &AppState, dict: Option<&str>, path: &str) -> Response {
     let candidates: Vec<&Arc<Dict>> = match dict {
         Some(name) => match st.registry.get(name) {
             None => {
