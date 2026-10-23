@@ -13,6 +13,7 @@ import { tooltip } from 'svelte-widgets/attachments'
 import { fetch_markdown } from './api.js'
 import { detect_variant, play_via_server, reject, toggle } from './audio.svelte.js'
 import { dicts } from './dicts.svelte.js'
+import { open_wordpop } from './wordpop.svelte.js'
 
 export interface EntryCallbacks {
   /** A cross-reference to another headword was activated. */
@@ -220,6 +221,22 @@ export function attach_entry_behavior(host: HTMLElement, cb: EntryCallbacks): ()
 
   // `delegate` is what makes the tooltip survive `{@html}` replacing every node
   // underneath: it is bound to the host, not to the anchors.
+  /**
+   * Double-click selects a word in every browser, so the selection *is* the
+   * word under the cursor — no caret arithmetic needed. The popover offers the
+   * lookup rather than performing it, because navigating away would cost the
+   * reader their place in a 60 KB entry.
+   */
+  const on_double_click = (event: MouseEvent) => {
+    if (event.button !== 0) return
+    const selected = window.getSelection()?.toString().trim() ?? ''
+    const candidate = /^[\p{L}\p{N}'’-]{1,40}$/u.test(selected) ? selected : ''
+    if (!candidate || candidate === word()) return
+    event.preventDefault()
+    open_wordpop(candidate, event.clientX, event.clientY, dict() || null)
+  }
+  host.addEventListener('dblclick', on_double_click)
+
   const detached = tooltip({
     delegate: 'a[data-word]',
     trigger: 'hover',
@@ -235,6 +252,7 @@ export function attach_entry_behavior(host: HTMLElement, cb: EntryCallbacks): ()
     if (preview_timer) clearTimeout(preview_timer)
     preview_controller?.abort()
     host.removeEventListener('click', on_click)
+    host.removeEventListener('dblclick', on_double_click)
     host.removeEventListener('error', on_error, true)
     host.removeEventListener('pointerover', on_pointer_over)
     clear_marked()

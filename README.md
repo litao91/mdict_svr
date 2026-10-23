@@ -148,6 +148,14 @@ light/dark themes. It sanitizes the stored publisher markup before injecting it
 and remaps the publishers' inline colours so every dictionary stays legible on a
 dark background.
 
+Reading behaves the way the desktop dictionary programs do: double-click any word
+in an entry to get a popover with a preview and a look-up action; a strip of the
+alphabetically neighbouring headwords sits under every headword (`/nearby` reads
+the sorted index directly); a miss offers "did you mean" candidates from a
+bounded Levenshtein pass; `*` and `?` wildcards search the whole index; and words
+can be starred into a persisted list exported as Anki, CSV or JSON. The player
+does 0.75×/1.25× and repeat for pronunciation practice.
+
 Audio that no browser can decode is handled up front: CALD4 and the Sound
 libraries store Ogg-Speex `.spx`, which the server reports as `200 audio/ogg` and
 `<audio>` then fails to *decode*. With `serve --ffmpeg <PATH>` the player asks

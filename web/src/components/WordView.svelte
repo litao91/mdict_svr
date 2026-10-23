@@ -14,7 +14,13 @@
   import { BookSearch, Headphones, LinkVariant, MusicOff } from 'svelte-widgets/icons'
   import EntryToolbar from './EntryToolbar.svelte'
   import EntryView from './EntryView.svelte'
-  import { fetch_entry, fetch_markdown, fetch_suggest, type LookupOutcome } from '../lib/api.js'
+  import {
+    fetch_entry,
+    fetch_markdown,
+    fetch_nearby,
+    fetch_suggest_full,
+    type LookupOutcome,
+  } from '../lib/api.js'
   import { dicts, display_name, has_resources, info as dict_info, load_dicts } from '../lib/dicts.svelte.js'
   import { sanitize_entry, type SanitizedEntry } from '../lib/sanitize.js'
   import { is_dict_enabled, settings } from '../lib/settings.svelte.js'
@@ -41,7 +47,8 @@
   let markdown = $state<string | null>(null)
   let find_open = $state(false)
   let entry_wrap: HTMLElement | null = $state(null)
-  let neighbours = $state<{ prev: string | null; next: string | null }>({ prev: null, next: null })
+  let nearby = $state<{ prev: string[]; next: string[] } | null>(null)
+  let did_you_mean = $state<string[]>([])
 
   // Memo caches. Plain Maps, not $state: they are never rendered from directly.
   const entry_cache = new Map<string, SanitizedEntry>()
@@ -172,43 +179,56 @@
       tab = null
       not_found = false
       loading = false
-      neighbours = { prev: null, next: null }
+      nearby = null
+      did_you_mean = []
       return
     }
     void run(word)
   })
 
-  /**
-   * `/suggest` is a forward-only prefix scan capped at 100 with no cursor, so
-   * there is no way to ask for "the headword before this one" directly. Shrink
-   * the prefix until the current word sits inside a window that is not truncated
-   * at the boundary we need. `prev` stays null when no window contains it.
-   */
-  async function find_neighbours(word: string) {
-    const lower = word.toLowerCase()
-    for (let len = word.length; len >= 1; len--) {
-      let list: string[]
-      try {
-        list = await fetch_suggest(word.slice(0, len), { limit: 100 })
-      } catch {
-        return { prev: null, next: null }
-      }
-      const i = list.indexOf(lower)
-      if (i < 0) continue
-      const at_edge = (i === 0 || i === list.length - 1) && list.length >= 100
-      if (at_edge && len > 1) continue
-      return { prev: i > 0 ? (list[i - 1] ?? null) : null, next: list[i + 1] ?? null }
-    }
-    return { prev: null, next: null }
-  }
+  // The immediate neighbours come straight from the dictionary's sorted index,
+  // scoped to the tab being read: exact, and never "unknown" the way the old
+  // prefix-shrink through /suggest was.
+  const neighbours = $derived<{ prev: string | null; next: string | null }>({
+    prev: nearby?.prev.at(-1) ?? null,
+    next: nearby?.next[0] ?? null,
+  })
 
   $effect(() => {
     const word = words.word
-    if (!word) return
+    const name = tab
+    if (!word || !name) {
+      nearby = null
+      return
+    }
     let cancelled = false
-    void find_neighbours(word).then((found) => {
-      if (!cancelled) neighbours = found
-    })
+    void fetch_nearby(word, { dict: name, before: 4, after: 4 })
+      .then((found) => {
+        if (!cancelled) nearby = found ? { prev: found.prev, next: found.next } : null
+      })
+      .catch(() => {
+        if (!cancelled) nearby = null
+      })
+    return () => {
+      cancelled = true
+    }
+  })
+
+  // A miss is usually a typo, and a typo is otherwise a dead end.
+  $effect(() => {
+    const word = words.word
+    if (!not_found || loading || !word) {
+      did_you_mean = []
+      return
+    }
+    let cancelled = false
+    void fetch_suggest_full(word, { fuzzy: true, limit: 6 })
+      .then((r) => {
+        if (!cancelled) did_you_mean = r.fuzzy.filter((w) => w !== word).slice(0, 5)
+      })
+      .catch(() => {
+        if (!cancelled) did_you_mean = []
+      })
     return () => {
       cancelled = true
     }
@@ -279,6 +299,14 @@
     {/if}
   </div>
 
+  {#if nearby && (nearby.prev.length > 0 || nearby.next.length > 0)}
+    <nav class="nearby" aria-label="Words nearby">
+      {#each [...nearby.prev, ...nearby.next] as w (w)}
+        <button class="nearby__chip" type="button" onclick={() => navigate(w)}>{w}</button>
+      {/each}
+    </nav>
+  {/if}
+
   {#if loading && total > 0}
     <Progress
       class="load-progress"
@@ -301,15 +329,28 @@
     <div class="empty">
       <Icon icon={BookSearch} width={34} height={34} />
       <p><strong>“{words.word}” is not in any searched dictionary.</strong></p>
-      <p class="empty__hint">
-        {#if total < dicts.all.length}
-          Only {total} of {dicts.all.length} dictionaries are switched on — enable more in
-          settings.
-        {:else}
-          Try a different spelling, or check that the dictionaries were imported with their
-          companion <code>.mdd</code> files.
-        {/if}
-      </p>
+      {#if did_you_mean.length > 0}
+        <p class="empty__didyoumean">
+          Did you mean
+          {#each did_you_mean as candidate, i (candidate)}
+            {#if i > 0}, {/if}
+            <button class="nearby__chip nearby__chip--guess" type="button" onclick={() => navigate(candidate)}>
+              {candidate}
+            </button>
+          {/each}
+          ?
+        </p>
+      {:else}
+        <p class="empty__hint">
+          {#if total < dicts.all.length}
+            Only {total} of {dicts.all.length} dictionaries are switched on — enable more in
+            settings.
+          {:else}
+            Try a different spelling, or check that the dictionaries were imported with their
+            companion <code>.mdd</code> files.
+          {/if}
+        </p>
+      {/if}
     </div>
   {:else if tab_items.length > 0}
     <Tabs
@@ -444,6 +485,36 @@
     flex-wrap: wrap;
     gap: 0.35rem;
     margin-bottom: 0.9rem;
+  }
+  .nearby {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    margin: -0.2rem 0 0.6rem;
+  }
+  .nearby__chip {
+    padding: 0.12rem 0.55rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-raised);
+    color: var(--fg-muted);
+    font: inherit;
+    font-size: 0.76rem;
+    cursor: pointer;
+    transition: color 0.12s, border-color 0.12s, background-color 0.12s;
+  }
+  .nearby__chip:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .nearby__chip--guess {
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .empty__didyoumean {
+    margin: 0.4rem 0 0;
+    color: var(--fg-muted);
   }
   .lookup-tasks {
     display: grid;

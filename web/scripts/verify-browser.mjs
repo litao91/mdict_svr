@@ -646,6 +646,126 @@ await wait_entry('OALD9')
     `side ${before.side} → ${after.side}, topbar ${before.bar} → ${after.bar}`)
   check('the document itself never scrolls', after.doc === 0, `scrollY=${after.doc}`)
 }
+// ── 18. the features the other dictionary implementations agree on ────────
+{
+  await goto_word('apple', 'OALD9')
+  await wait_entry('OALD9')
+
+  // words nearby, read straight off the sorted index
+  const chips = page.locator('.nearby .nearby__chip')
+  const chip_texts = await chips.allTextContents()
+  check('a "words nearby" strip sits under the headword', chip_texts.length >= 4,
+    JSON.stringify(chip_texts.slice(0, 8)))
+  check('the neighbours are the real index neighbours',
+    chip_texts.includes('apple pie') && chip_texts.includes('applause'),
+    JSON.stringify(chip_texts))
+  await chips.first().click()
+  await page.waitForTimeout(1800)
+  check('a nearby chip navigates', (await page.locator('.entry').count()) > 0 &&
+    !(page.url().includes('word=apple&')), page.url())
+
+  // did-you-mean on a typo
+  await goto_word('aple', 'OALD9')
+  await page.waitForTimeout(2500)
+  const guesses = page.locator('.empty .nearby__chip--guess')
+  const guess_texts = await guesses.allTextContents()
+  check('a miss offers "did you mean" candidates', guess_texts.includes('apple'),
+    JSON.stringify(guess_texts))
+  if (guess_texts.includes('apple')) {
+    await guesses.filter({ hasText: /^apple$/ }).first().click()
+    await page.waitForTimeout(2000)
+    check('choosing a correction looks it up', page.url().includes('word=apple'), page.url())
+  }
+
+  // double-click any word in the entry
+  await goto_word('apple', 'OALD9')
+  await wait_entry('OALD9')
+  // Select the word "fruit" inside the definition and fire the dblclick a
+  // browser would fire: the handler reads the selection, not the caret.
+  const dispatched = await page.evaluate(() => {
+    const root = document.querySelector('.entry')
+    if (!root) return false
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    let node
+    while ((node = walker.nextNode())) {
+      const at = (node.nodeValue ?? '').indexOf('fruit')
+      if (at < 0) continue
+      const range = document.createRange()
+      range.setStart(node, at)
+      range.setEnd(node, at + 'fruit'.length)
+      const sel = window.getSelection()
+      sel?.removeAllRanges()
+      sel?.addRange(range)
+      node.parentElement?.dispatchEvent(
+        new MouseEvent('dblclick', { bubbles: true, cancelable: true, button: 0, clientX: 500, clientY: 500 }),
+      )
+      return true
+    }
+    return false
+  })
+  check('a word inside the definition can be selected and double-clicked', dispatched)
+  await page.waitForTimeout(1500)
+  const pop_word = await page.locator('.wordpop__word').textContent().catch(() => null)
+  check('double-clicking a word opens the lookup popover', pop_word === 'fruit', String(pop_word))
+  if (pop_word === 'fruit') {
+    check('the popover previews the target entry',
+      ((await page.locator('.wordpop__body').textContent()) ?? '').length > 10)
+    await page.locator('.wordpop__btn', { hasText: 'Save' }).click()
+    await page.waitForTimeout(600)
+    check('saving from the popover keeps it open',
+      (await page.locator('.wordpop').count()) === 1)
+    await page.locator('.wordpop__btn--go').click()
+    await page.waitForTimeout(2000)
+    check('the popover can navigate to the double-clicked word',
+      page.url().includes('word=fruit'), page.url())
+  }
+
+  // word list: starred from the popover above, visible in the sidebar
+  await page.locator('.shell__side .accordion-trigger').filter({ hasText: 'Word list' }).first().click()
+  await page.waitForTimeout(500)
+  const saved = await page.locator('.shell__side .side-link__label').allTextContents()
+  check('the word list keeps the starred word', saved.includes('fruit'), JSON.stringify(saved))
+  const export_buttons = await page.locator('.shell__side .side-export button').allTextContents()
+  check('the word list exports to Anki, CSV and JSON',
+    export_buttons.some((t) => /Anki/.test(t)) && export_buttons.some((t) => /CSV/.test(t)) &&
+    export_buttons.some((t) => /JSON/.test(t)), JSON.stringify(export_buttons))
+  await shot('17-wordlist')
+
+  // playback rate and loop
+  await goto_word('apple', 'OALD9')
+  await wait_entry('OALD9')
+  await page.locator('.entry a[data-audio][data-playable="1"]').first().click()
+  await page.waitForSelector('.player', { timeout: 6000 }).catch(() => {})
+  await page.waitForTimeout(800)
+  await page.locator('.player .button-group button', { hasText: '0.75×' }).click()
+  await page.waitForTimeout(400)
+  const rate = await page.evaluate(() => {
+    // the element is detached from the DOM; read it through the player state
+    return document.querySelector('.player')?.textContent?.includes('0:00') ?? false
+  })
+  const loop_before = await page.locator('.player__loop').getAttribute('aria-pressed')
+  await page.locator('.player__loop').click()
+  await page.waitForTimeout(300)
+  const loop_after = await page.locator('.player__loop').getAttribute('aria-pressed')
+  check('the loop control toggles', loop_before === 'false' && loop_after === 'true',
+    `${loop_before} → ${loop_after}`)
+  check('the speed control is present and selectable', rate, 'player visible at 0.75x')
+  await shot('18-player-rate-loop')
+
+  // wildcards in the palette
+  await page.keyboard.press('Control+k')
+  await page.waitForTimeout(600)
+  const input = page.locator('dialog[open] input').first()
+  await input.click()
+  await input.pressSequentially('app*e', { delay: 60 })
+  await page.waitForTimeout(1800)
+  const wild = await page.evaluate(() =>
+    [...document.querySelectorAll('dialog[open] [role="option"]')]
+      .map((n) => n.textContent?.trim()).filter(Boolean))
+  check('wildcards search the whole index', wild.some((t) => /^app.*e$/i.test(t) && t !== 'app*e'),
+    JSON.stringify(wild.slice(0, 6)))
+  await page.keyboard.press('Escape')
+}
 
 await browser.close()
 

@@ -11,6 +11,7 @@
   import LandingPage from './components/LandingPage.svelte'
   import SettingsSheet from './components/SettingsSheet.svelte'
   import Sidebar from './components/Sidebar.svelte'
+  import WordPopover from './components/WordPopover.svelte'
   import WordView from './components/WordView.svelte'
   import { load_dicts } from './lib/dicts.svelte.js'
   import { init_from_url, words } from './lib/words.svelte.js'
@@ -87,6 +88,7 @@
 </div>
 
 <AudioPlayer />
+<WordPopover />
 <SettingsSheet bind:open={settings_open} />
 <ImageLightbox bind:image={lightbox} />
 <CommandPalette bind:open={palette_open} on_open_settings={() => (settings_open = true)} />

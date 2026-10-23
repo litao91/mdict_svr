@@ -92,17 +92,15 @@ export function clear_history(): void {
  * Pick a headword at random. `/suggest` is a forward-only prefix scan, so the
  * only way to sample the index is to ask for a random letter's window.
  */
-export async function random_word(): Promise<void> {
+export async function random_word(): Promise<string | null> {
   const letters = 'abcdefghijklmnopqrstuvwxyz'
   const pick = () => letters[Math.floor(Math.random() * letters.length)]!
   for (let attempt = 0; attempt < 6; attempt++) {
     const list = await fetch_suggest(attempt < 3 ? pick() : pick() + pick(), { limit: 100 })
     const usable = list.filter((w) => /^[a-z]/i.test(w))
-    if (usable.length > 0) {
-      navigate(usable[Math.floor(Math.random() * usable.length)]!)
-      return
-    }
+    if (usable.length > 0) return usable[Math.floor(Math.random() * usable.length)]!
   }
+  return null
 }
 
 /** Read the initial word from the URL and keep back/forward working. */

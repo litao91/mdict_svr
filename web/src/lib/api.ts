@@ -28,6 +28,10 @@ export interface DictInfo {
 export interface SuggestResponse {
   query: string
   count: number
+  /** How the list was produced: `prefix`, `wildcard`, `fuzzy` or `prefix+fuzzy`. */
+  mode: string
+  /** Only the typo-tolerant additions, for a "did you mean" affordance. */
+  fuzzy: string[]
   suggestions: string[]
 }
 
@@ -72,17 +76,76 @@ export async function fetch_dicts(signal?: AbortSignal): Promise<ServerInfo> {
 /** `GET /suggest` — prefix autocomplete. No match is `200` with an empty list. */
 export async function fetch_suggest(
   query: string,
-  opts: { dict?: string; limit?: number; signal?: AbortSignal } = {},
+  opts: { dict?: string; limit?: number; signal?: AbortSignal; fuzzy?: boolean } = {},
 ): Promise<string[]> {
+  return (await fetch_suggest_full(query, opts)).suggestions
+}
+
+/**
+ * The whole `/suggest` body. `fuzzy` costs a full index scan server-side, so it
+ * is opt-in: as-you-type leaves it off, a settled input or a miss turns it on.
+ * `fuzzy_results` carries only the typo-tolerant additions, for "did you mean".
+ */
+export async function fetch_suggest_full(
+  query: string,
+  opts: { dict?: string; limit?: number; signal?: AbortSignal; fuzzy?: boolean } = {},
+): Promise<SuggestResponse> {
   const params = new URLSearchParams({ q: query, limit: String(opts.limit ?? 20) })
   if (opts.dict) params.set('dict', opts.dict)
+  if (opts.fuzzy) params.set('fuzzy', 'true')
   const res = await fetch(`/suggest?${params}`, {
     signal: opts.signal,
     headers: { accept: 'application/json' },
   })
   if (!res.ok) throw new Error(await error_body(res))
   const body = (await res.json()) as Partial<SuggestResponse>
-  return body.suggestions ?? []
+  return {
+    query: body.query ?? query,
+    count: body.count ?? 0,
+    mode: body.mode ?? 'prefix',
+    fuzzy: body.fuzzy ?? [],
+    suggestions: body.suggestions ?? [],
+  }
+}
+
+export interface NearbyResponse {
+  word: string
+  dict: string
+  exact: boolean
+  prev: string[]
+  next: string[]
+}
+
+/**
+ * `GET /nearby` — the headwords either side of `word` in one dictionary's
+ * sorted index. Exact and O(log n), unlike shrinking prefixes through
+ * `/suggest`, which is forward-only and gives up when no window contains the
+ * word.
+ */
+export async function fetch_nearby(
+  word: string,
+  opts: { dict?: string; before?: number; after?: number; signal?: AbortSignal } = {},
+): Promise<NearbyResponse | null> {
+  const params = new URLSearchParams({
+    word,
+    before: String(opts.before ?? 5),
+    after: String(opts.after ?? 5),
+  })
+  if (opts.dict) params.set('dict', opts.dict)
+  const res = await fetch(`/nearby?${params}`, {
+    signal: opts.signal,
+    headers: { accept: 'application/json' },
+  })
+  if (!res.ok) return null
+  const body = (await res.json()) as Partial<NearbyResponse>
+  if (!Array.isArray(body.prev) || !Array.isArray(body.next)) return null
+  return {
+    word: body.word ?? word,
+    dict: body.dict ?? '',
+    exact: body.exact === true,
+    prev: body.prev,
+    next: body.next,
+  }
 }
 
 /** `GET /lookup` for one dictionary, as HTML. */

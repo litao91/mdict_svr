@@ -42,6 +42,10 @@ export interface NowPlaying {
   position: number
   duration: number
   volume: number
+  /** Playback rate; learners re-hear pronunciation slowly. */
+  rate: number
+  /** Repeat the clip until stopped. */
+  loop: boolean
 }
 
 export const player = $state<NowPlaying>({
@@ -54,6 +58,8 @@ export const player = $state<NowPlaying>({
   position: 0,
   duration: 0,
   volume: 1,
+  rate: 1,
+  loop: false,
 })
 
 let el: HTMLAudioElement | null = null
@@ -177,6 +183,8 @@ export function play(url: string, meta: PlayMeta = {}): void {
   // Synchronous, inside the click handler, so the user gesture is still valid.
   audio.src = url
   audio.volume = player.volume
+  audio.playbackRate = player.rate
+  audio.loop = player.loop
   void audio.play().catch(() => {
     /* the error listener does the real diagnosis */
   })
@@ -249,6 +257,8 @@ export function play_via_server(url: string, dict: string | null, meta: PlayMeta
   player.status = 'loading'
   audio.src = transcode_url_for(url, dict)
   audio.volume = player.volume
+  audio.playbackRate = player.rate
+  audio.loop = player.loop
   void audio.play().catch(() => {
     /* the error listener does the real diagnosis */
   })
@@ -301,6 +311,17 @@ export function seek(seconds: number): void {
 export function set_volume(value: number): void {
   player.volume = Math.min(1, Math.max(0, value))
   if (el) el.volume = player.volume
+}
+
+/** 0.6x–1.25x: slow enough to catch each phoneme, fast enough to stay natural. */
+export function set_rate(value: number): void {
+  player.rate = Math.min(1.25, Math.max(0.6, value))
+  if (el) el.playbackRate = player.rate
+}
+
+export function set_loop(value: boolean): void {
+  player.loop = value
+  if (el) el.loop = value
 }
 
 /** Whether this browser claims it can handle Ogg-Speex. It cannot, anywhere. */

@@ -3,6 +3,7 @@
   import type { CmdAction } from 'svelte-widgets'
   import { apply_theme_mode, theme } from 'svelte-widgets/theme'
   import { fetch_suggest } from '../lib/api.js'
+  import { in_wordlist, toggle_wordlist } from '../lib/wordlist.svelte.js'
   import { clear_history, home, navigate, random_word, words } from '../lib/words.svelte.js'
 
   let {
@@ -25,7 +26,9 @@
       label: 'Look up a random word',
       group: 'Commands',
       keywords: ['shuffle', 'surprise', 'dice'],
-      action: () => void random_word(),
+      action: () => {
+        void random_word().then((w) => w && navigate(w))
+      },
     },
     {
       id: 'cmd-theme',
@@ -55,6 +58,20 @@
       keywords: ['recent', 'forget'],
       action: () => clear_history(),
     },
+    {
+      id: 'cmd-star',
+      label: words.word
+        ? in_wordlist(words.word)
+          ? `Remove “${words.word}” from your word list`
+          : `Keep “${words.word}” in your word list`
+        : 'Keep the current word in your word list',
+      group: 'Commands',
+      keywords: ['star', 'save', 'favourite', 'favorite', 'anki'],
+      disabled: !words.word,
+      action: () => {
+        if (words.word) toggle_wordlist(words.word)
+      },
+    },
   ]
 
   const recents: CmdAction[] = words.recent.slice(0, 6).map((word) => ({
@@ -79,10 +96,15 @@
       void fetch_suggest(query, { limit: 12, signal: controller.signal })
         .then((list) => {
           if (query === search_text.trim()) {
+            // CommandMenu re-filters our server-side results with its own
+            // subsequence matcher, which a literal `*` can never satisfy. Tagging
+            // each wildcard hit with the raw query keeps the server's answer.
+            const wildcard = query.includes('*') || query.includes('?')
             word_actions = list.map((word) => ({
               id: `word:${word}`,
               label: word,
               group: 'Headwords',
+              keywords: wildcard ? [query] : undefined,
               action: () => navigate(word),
             }))
           }

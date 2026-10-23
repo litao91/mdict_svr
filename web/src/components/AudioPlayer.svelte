@@ -1,7 +1,22 @@
 <script lang="ts">
-  import { Icon } from 'svelte-widgets'
-  import { Download, Pause, Play, Stop, VolumeOff, VolumeOn } from 'svelte-widgets/icons'
-  import { pause, player, resume, seek, set_volume, stop } from '../lib/audio.svelte.js'
+  import { ButtonGroup, Icon } from 'svelte-widgets'
+  import {
+    Download,
+    Pause,
+    Play,
+    Repeat,
+    Stop,
+    VolumeOff,
+    VolumeOn,
+  } from 'svelte-widgets/icons'
+  import { pause, player, resume, seek, set_loop, set_rate, set_volume, stop } from '../lib/audio.svelte.js'
+
+  // ButtonGroup is generic over string values, so the rate travels as text.
+  const rate_options = [
+    { value: '0.75', label: '0.75×' },
+    { value: '1', label: '1×' },
+    { value: '1.25', label: '1.25×' },
+  ]
 
   const shown = $derived(player.url !== null && player.status !== 'idle')
   const can_control = $derived(player.reason !== 'codec')
@@ -95,6 +110,25 @@
     {/if}
 
     {#if can_control}
+      <ButtonGroup
+        class="player__rate"
+        options={rate_options}
+        value={String(player.rate)}
+        label="Playback speed"
+        on_change={(value: string | null) => {
+          const rate = Number(value)
+          if (Number.isFinite(rate)) set_rate(rate)
+        }}
+      />
+      <button
+        class="player__loop"
+        type="button"
+        title={player.loop ? 'Stop repeating' : 'Repeat this clip'}
+        aria-pressed={player.loop}
+        onclick={() => set_loop(!player.loop)}
+      >
+        <Icon icon={Repeat} width={14} height={14} />
+      </button>
       <label class="player__vol" title="Volume">
         <Icon icon={player.volume > 0 ? VolumeOn : VolumeOff} width={15} height={15} />
         <input
@@ -158,6 +192,28 @@
     display: flex;
     gap: 0.3rem;
     align-items: center;
+  }
+  /* The class lands on ButtonGroup's root, outside this component's scope. */
+  :global(.player__rate) {
+    flex: none;
+  }
+  .player__loop {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 1.7rem;
+    height: 1.7rem;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--fg-faint);
+    cursor: pointer;
+  }
+  .player__loop[aria-pressed='true'] {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: var(--accent);
   }
   .player__vol input {
     width: 4.5rem;

@@ -1,33 +1,73 @@
 <script lang="ts">
   import { Accordion, ActionButton, Icon } from 'svelte-widgets'
-  import { ChevronDown, ChevronRight, Close, Dice, History, Notebook } from 'svelte-widgets/icons'
+  import {
+    ChevronDown,
+    ChevronRight,
+    Close,
+    Dice,
+    Download,
+    History,
+    Notebook,
+    Star,
+  } from 'svelte-widgets/icons'
   import { toast } from 'svelte-widgets/toast-queue'
-  import { fetch_suggest } from '../lib/api.js'
+  import { fetch_markdown } from '../lib/api.js'
   import { dicts, display_name } from '../lib/dicts.svelte.js'
-  import { clear_history, forget, navigate, select_dict, words } from '../lib/words.svelte.js'
+  import {
+    clear_wordlist,
+    download_wordlist,
+    format_wordlist,
+    toggle_wordlist,
+    wordlist,
+    type WordlistFormat,
+  } from '../lib/wordlist.svelte.js'
+  import { clear_history, forget, navigate, random_word, select_dict, words } from '../lib/words.svelte.js'
 
   let open_section = $state<string | null>('recent')
+  let exporting = $state(false)
 
   const sections = [
     { value: 'recent', label: 'Recent' },
+    { value: 'wordlist', label: 'Word list' },
     { value: 'libraries', label: 'Dictionaries' },
   ]
 
+  const section_icon = (value: string) =>
+    value === 'recent' ? History : value === 'wordlist' ? Star : Notebook
+
   /**
-   * `/suggest` is a forward-only prefix scan, so there is no "random entry"
-   * endpoint. Pick a random prefix, take a random item from the window it
-   * returns, and retry on a dead prefix.
+   * Anki cards want a back side, so the TSV export fetches each word's Markdown
+   * first. Capped: a 500-word list must not fire 500 conversions at once.
    */
-  async function random_word(): Promise<string> {
-    const letters = 'abcdefghijklmnopqrstuvwxyz'
-    const pick = () => letters[Math.floor(Math.random() * letters.length)]!
-    for (let attempt = 0; attempt < 6; attempt++) {
-      const prefix = attempt < 3 ? pick() : pick() + pick()
-      const list = await fetch_suggest(prefix, { limit: 100 })
-      const usable = list.filter((w) => /^[a-z]/i.test(w))
-      if (usable.length > 0) return usable[Math.floor(Math.random() * usable.length)]!
+  async function export_wordlist(format: WordlistFormat) {
+    if (exporting) return
+    exporting = true
+    try {
+      const definitions = new Map<string, string>()
+      if (format === 'anki') {
+        for (const item of wordlist.items.slice(0, 60)) {
+          const scope = words.dict ?? dicts.all[0]?.name ?? ''
+          if (!scope) break
+          const md = await fetch_markdown(item.word, scope).catch(() => null)
+          if (md) {
+            definitions.set(
+              item.word,
+              md.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 2).join(' '),
+            )
+          }
+        }
+      }
+      const mime =
+        format === 'json' ? 'application/json' : format === 'csv' ? 'text/csv' : 'text/tab-separated-values'
+      download_wordlist(
+        `mdict-wordlist.${format === 'anki' ? 'txt' : format}`,
+        format_wordlist(wordlist.items, format, (w) => definitions.get(w) ?? null),
+        mime,
+      )
+      toast.show(`Word list exported as ${format.toUpperCase()}`, { priority: 'success' })
+    } finally {
+      exporting = false
     }
-    throw new Error('no headword found')
   }
 
   /** Scope the search to one dictionary, or back to all of them. */
@@ -49,7 +89,7 @@
   >
     {#snippet trigger({ item, open })}
       <span class="side-block__title">
-        <Icon icon={item.value === 'recent' ? History : Notebook} width={13} height={13} />
+        <Icon icon={section_icon(item.value)} width={13} height={13} />
         {item.label}
         <span class="side-block__chevron">
           <Icon icon={open ? ChevronDown : ChevronRight} width={12} height={12} />
@@ -90,8 +130,10 @@
 
         <div class="side-random">
           <ActionButton
-            action={random_word}
-            on_success={(word) => navigate(word)}
+            action={async () => (await random_word()) ?? ''}
+            on_success={(picked) => {
+              if (picked) navigate(picked)
+            }}
             on_error={(error) => {
               toast.show(`Could not pick a random word: ${(error as Error).message}`, {
                 priority: 'error',
@@ -101,6 +143,46 @@
             icons={{ ready: Dice }}
           />
         </div>
+      {:else if item.value === 'wordlist'}
+        {#if wordlist.items.length === 0}
+          <p class="side-empty">
+            Star a word — from the toolbar or by double-clicking it in an entry — and it is kept
+            here.
+          </p>
+        {:else}
+          <ul class="side-list">
+            {#each wordlist.items as entry (entry.word)}
+              <li class="side-row">
+                <button
+                  class="side-link"
+                  type="button"
+                  aria-current={entry.word === words.word}
+                  onclick={() => navigate(entry.word)}
+                >
+                  <span class="side-link__label">{entry.word}</span>
+                </button>
+                <button
+                  class="side-drop"
+                  type="button"
+                  title="Remove “{entry.word}”"
+                  aria-label="Remove {entry.word}"
+                  onclick={() => toggle_wordlist(entry.word)}
+                >
+                  <Icon icon={Close} width={12} height={12} />
+                </button>
+              </li>
+            {/each}
+          </ul>
+          <div class="side-export">
+            <span class="side-export__label">Export</span>
+            <button class="side-clear" type="button" disabled={exporting} onclick={() => export_wordlist('anki')}>
+              <Icon icon={Download} width={11} height={11} /> Anki
+            </button>
+            <button class="side-clear" type="button" disabled={exporting} onclick={() => export_wordlist('csv')}>CSV</button>
+            <button class="side-clear" type="button" disabled={exporting} onclick={() => export_wordlist('json')}>JSON</button>
+            <button class="side-clear" type="button" onclick={clear_wordlist}>Clear</button>
+          </div>
+        {/if}
       {:else}
         <ul class="side-list">
           {#each dicts.all as d (d.name)}
@@ -196,6 +278,25 @@
   }
   .side-clear:hover {
     color: var(--accent);
+  }
+  .side-export {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.15rem 0.6rem;
+    margin: 0.35rem 0.5rem 0;
+  }
+  .side-export__label {
+    font-size: 0.72rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+  }
+  .side-export .side-clear {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    margin: 0;
   }
   .side-random {
     margin-top: 0.7rem;

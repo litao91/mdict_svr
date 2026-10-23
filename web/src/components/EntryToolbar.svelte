@@ -1,7 +1,9 @@
 <script lang="ts">
   import { ButtonGroup, CopyButton, FullscreenButton, Icon, NumberRangeInput } from 'svelte-widgets'
-  import { FormatText, Markdown, TextSearch } from 'svelte-widgets/icons'
+  import { FormatText, Markdown, Star, StarOutline, TextSearch } from 'svelte-widgets/icons'
+  import { toast } from 'svelte-widgets/toast-queue'
   import { FONT_SCALE_MAX, FONT_SCALE_MIN, settings } from '../lib/settings.svelte.js'
+  import { in_wordlist, toggle_wordlist } from '../lib/wordlist.svelte.js'
   import type { EntryView as ViewMode } from '../lib/settings.svelte.js'
 
   let {
@@ -24,6 +26,16 @@
     { value: 'styled' as const, label: 'Entry', icon: FormatText },
     { value: 'markdown' as const, label: 'Markdown', icon: Markdown },
   ]
+
+  const starred = $derived(in_wordlist(word))
+
+  function on_star() {
+    const added = toggle_wordlist(word)
+    toast.show(added ? `“${word}” added to your word list` : `“${word}” removed from your word list`, {
+      priority: 'success',
+      dedupe_key: `wordlist:${word}`,
+    })
+  }
 </script>
 
 <div class="toolbar">
@@ -45,6 +57,16 @@
     disabled={markdown === null}
     title={markdown === null ? 'Markdown still loading' : `Copy “${word}” from ${dict} as Markdown`}
   />
+
+  <button
+    class="tool-btn"
+    type="button"
+    title={starred ? `Remove “${word}” from your word list` : `Keep “${word}” in your word list`}
+    aria-pressed={starred}
+    onclick={on_star}
+  >
+    <Icon icon={starred ? Star : StarOutline} width={16} height={16} />
+  </button>
 
   <FullscreenButton wrapper={fullscreen_target ?? undefined} placement="inline" class="tool-btn" />
 

@@ -17,7 +17,7 @@
   import { toast } from 'svelte-widgets/toast-queue'
   import Sidebar from './Sidebar.svelte'
   import WordSearch from './WordSearch.svelte'
-  import { clear_history, random_word, words } from '../lib/words.svelte.js'
+  import { clear_history, navigate, random_word, words } from '../lib/words.svelte.js'
 
   let {
     on_open_settings,
@@ -44,7 +44,9 @@
       id: 'menu-random',
       label: 'Look up a random word',
       icon: Shuffle,
-      action: () => void random_word(),
+      action: () => {
+        void random_word().then((w) => w && navigate(w))
+      },
     },
     {
       id: 'menu-copy',
