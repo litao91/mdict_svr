@@ -418,6 +418,13 @@ html[data-theme='dark'] .entry [data-c] {
   letter-spacing: 0.03em;
 }
 
+/* Publisher thumbnails are opaque white-box art; a hairline ring and rounded
+   corners keep them from reading as holes punched in a dark background. */
+.entry img {
+  border-radius: 6px;
+  box-shadow: 0 0 0 1px var(--border);
+}
+
 /* ---- OxEnCh8 ------------------------------------------------------------- */
 
 /* `简` toggles simplified Chinese on the publisher's site; `.clear` is an empty

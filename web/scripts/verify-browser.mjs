@@ -767,6 +767,43 @@ await wait_entry('OALD9')
   await page.keyboard.press('Escape')
 }
 
+// ── 19. phone-width layout ────────────────────────────────────────────────
+{
+  const phone = await browser.newPage({ viewport: { width: 420, height: 860 } })
+  await phone.goto(`${BASE}/?word=apple&dict=OALD9`, { waitUntil: 'domcontentloaded' })
+  await phone.waitForSelector('.entry', { timeout: 25000 })
+  await phone.waitForTimeout(1200)
+  const layout = await phone.evaluate(() => {
+    const cols = getComputedStyle(document.querySelector('.entry-columns')).gridTemplateColumns
+    const entry = document.querySelector('.entry-wrap').getBoundingClientRect()
+    const tabs = document.querySelector('.tabs-list')
+    return {
+      tracks: cols.split(' ').length,
+      entry_width: Math.round(entry.width),
+      tabs_scrollable: tabs.scrollWidth > tabs.clientWidth || getComputedStyle(tabs).overflowX === 'auto',
+      tabs_one_row: tabs.getBoundingClientRect().height < 90,
+    }
+  })
+  check('the entry takes the full phone width', layout.tracks === 1 && layout.entry_width > 360,
+    JSON.stringify(layout))
+  check('the dictionary tabs scroll in one row instead of stacking',
+    layout.tabs_one_row, JSON.stringify(layout))
+  await phone.locator('.nav-toggle').click()
+  await phone.waitForTimeout(700)
+  const drawer = await phone.evaluate(() => {
+    const pane = document.querySelector('.nav-pane')
+    if (!pane) return null
+    const r = pane.getBoundingClientRect()
+    return { visible: getComputedStyle(pane).display !== 'none', x: Math.round(r.x), w: Math.round(r.width), h: Math.round(r.height) }
+  })
+  check('the navigation drawer opens on phones', !!drawer && drawer.visible && drawer.x <= 8 && drawer.w > 250,
+    JSON.stringify(drawer))
+  check('the drawer lists history and dictionaries',
+    (await phone.locator('.nav-pane .accordion-trigger').count()) >= 3,
+    `${await phone.locator('.nav-pane .accordion-trigger').count()} sections`)
+  await phone.close()
+}
+
 await browser.close()
 
 console.log('\n── summary ──')

@@ -89,25 +89,21 @@
   <div class="topbar__spacer"></div>
 
   <div class="topbar__actions">
+    <!-- DraggablePane renders its own toggle <button> around this snippet, so
+         the snippet must not contain a second button: nesting them makes one
+         click toggle twice and the pane never opens. -->
     <DraggablePane
       align="start"
       position="fixed"
       resize="width"
       max_width="82vw"
       bind:open={nav_open}
+      toggle_props={{ class: 'nav-toggle', 'aria-label': 'Dictionaries and history' }}
       pane_props={{ class: 'nav-pane', 'aria-label': 'Dictionaries and look-up history' }}
     >
       {#snippet toggle(state)}
-        <button
-          class="icon-btn nav-toggle"
-          type="button"
-          title="Dictionaries and history"
-          aria-expanded={state.open}
-          onclick={() => (nav_open = !state.open)}
-        >
-          <Icon icon={state.open ? Close : Menu} width={17} height={17} />
-          <span class="sr-only">Dictionaries and history</span>
-        </button>
+        <Icon icon={state.open ? Close : Menu} width={17} height={17} />
+        <span class="sr-only">Dictionaries and history</span>
       {/snippet}
       {#snippet children()}
         <Sidebar />
@@ -175,17 +171,42 @@
   .brand:hover {
     background: var(--bg-sunken);
   }
-  .nav-toggle {
+  /* The toggle is DraggablePane's own button; it only exists on narrow
+     screens, where the static sidebar rail is hidden. */
+  :global(.nav-toggle) {
     display: none;
+    place-items: center;
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--fg-muted);
+    cursor: pointer;
+  }
+  :global(.nav-toggle:hover) {
+    background: var(--bg-sunken);
+    color: var(--fg);
   }
   @media (max-width: 900px) {
-    .nav-toggle {
+    :global(.nav-toggle) {
       display: grid;
     }
   }
-  .nav-pane {
-    background: var(--bg);
-    border-inline-end: 1px solid var(--border);
+  /* DraggablePane positions itself inline from its toggle; as the phone's only
+     navigation it must read as a drawer, so pin it under the topbar. The
+     !important beats the component's inline top/left. */
+  :global(.nav-pane) {
+    top: 3.4rem !important;
+    left: 0.5rem !important;
+    width: min(20rem, calc(100vw - 1rem));
+    max-height: calc(100vh - 4.4rem);
+    overflow-y: auto;
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
     padding: 0.75rem 0.5rem;
   }
   .menu-row {

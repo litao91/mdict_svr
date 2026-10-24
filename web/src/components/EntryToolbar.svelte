@@ -121,4 +121,9 @@
     gap: 0.5rem;
     min-width: 11rem;
   }
+  @media (max-width: 600px) {
+    .font-scale {
+      display: none;
+    }
+  }
 </style>

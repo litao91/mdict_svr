@@ -554,4 +554,33 @@
       display: none;
     }
   }
+
+  /* Below the ToC's breakpoint the second grid track and the divider would
+     squeeze the entry into a column; the outline is hidden, so collapse. */
+  @media (max-width: 1100px) {
+    .entry-columns {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .entry-columns :global(.pane-divider) {
+      display: none;
+    }
+  }
+
+  /* Eleven dictionary names do not fit a phone: scroll the tab row instead of
+     stacking it into a four-line block. */
+  @media (max-width: 700px) {
+    .word-view :global(.tabs-list) {
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      scrollbar-width: thin;
+    }
+    .word-view :global(.tabs-tab) {
+      flex: none;
+      white-space: nowrap;
+    }
+    .nearby {
+      max-height: 4.6rem;
+      overflow-y: auto;
+    }
+  }
 </style>

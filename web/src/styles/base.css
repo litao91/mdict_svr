@@ -416,6 +416,19 @@ input[type='range'] {
   flex: 1;
 }
 
+@media (max-width: 700px) {
+  /* On a phone the search needs the spacer's room; the brand keeps its icon. */
+  .topbar__spacer {
+    display: none;
+  }
+  .topbar__search {
+    max-width: none;
+  }
+  .brand span {
+    display: none;
+  }
+}
+
 /* Applied to the WordSearch component's root from Header, so it lives here
    rather than in Header's scoped <style>. */
 .topbar__search {

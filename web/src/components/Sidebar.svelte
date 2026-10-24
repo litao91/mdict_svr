@@ -302,4 +302,18 @@
     margin-top: 0.7rem;
     padding: 0 0.35rem;
   }
+  /* ActionButton ships its own bordered pill; in the rail it should read as a
+     quiet row like the history links above it. */
+  .side-random :global(button) {
+    width: 100%;
+    justify-content: flex-start;
+    padding: 0.35rem 0.5rem;
+    border-color: transparent;
+    background: transparent;
+    color: var(--fg-muted);
+  }
+  .side-random :global(button:hover) {
+    background: var(--bg-sunken);
+    color: var(--fg);
+  }
 </style>
