@@ -9,13 +9,9 @@ import { storage_get_json, storage_set_json, storage_remove } from 'svelte-widge
 
 const KEY = 'mdict.settings'
 
-export type EntryView = 'styled' | 'markdown'
-
 export interface Settings {
   /** Multiplier applied to the entry's base font size. */
   font_scale: number
-  /** Render the publisher's HTML, or the server's Markdown conversion. */
-  view: EntryView
   /** Dictionary names switched on. Empty means "all of them". */
   enabled_dicts: string[]
   /** Hover a cross-reference to preview its definition. */
@@ -31,7 +27,6 @@ export const FONT_SCALE_MAX = 1.6
 
 const DEFAULTS: Settings = {
   font_scale: 1,
-  view: 'styled',
   enabled_dicts: [],
   previews: true,
   show_audio: true,
@@ -50,7 +45,6 @@ function load(): Settings {
       raw.font_scale <= FONT_SCALE_MAX
         ? raw.font_scale
         : DEFAULTS.font_scale,
-    view: raw.view === 'markdown' ? 'markdown' : 'styled',
     enabled_dicts: Array.isArray(raw.enabled_dicts)
       ? raw.enabled_dicts.filter((d): d is string => typeof d === 'string')
       : [],
@@ -66,7 +60,6 @@ export const settings = $state<Settings>(load())
 function snapshot(): Settings {
   return {
     font_scale: settings.font_scale,
-    view: settings.view,
     enabled_dicts: [...settings.enabled_dicts],
     previews: settings.previews,
     show_audio: settings.show_audio,

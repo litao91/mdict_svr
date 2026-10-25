@@ -1,6 +1,5 @@
 <script lang="ts">
   import {
-    CodeBlock,
     Icon,
     PrevNext,
     Progress,
@@ -16,14 +15,13 @@
   import EntryView from './EntryView.svelte'
   import {
     fetch_entry,
-    fetch_markdown,
     fetch_nearby,
     fetch_suggest_full,
     type LookupOutcome,
   } from '../lib/api.js'
   import { dicts, display_name, has_resources, info as dict_info, load_dicts } from '../lib/dicts.svelte.js'
   import { sanitize_entry, type SanitizedEntry } from '../lib/sanitize.js'
-  import { is_dict_enabled, settings } from '../lib/settings.svelte.js'
+  import { is_dict_enabled } from '../lib/settings.svelte.js'
   import { navigate, select_dict, words } from '../lib/words.svelte.js'
 
   let {
@@ -44,7 +42,6 @@
   let settled = $state(0)
   let total = $state(0)
   let not_found = $state(false)
-  let markdown = $state<string | null>(null)
   let find_open = $state(false)
   let entry_wrap: HTMLElement | null = $state(null)
   let nearby = $state<{ prev: string[]; next: string[] } | null>(null)
@@ -52,7 +49,6 @@
 
   // Memo caches. Plain Maps, not $state: they are never rendered from directly.
   const entry_cache = new Map<string, SanitizedEntry>()
-  const md_cache = new Map<string, string>()
   let controller: AbortController | null = null
   let request_id = 0
 
@@ -159,6 +155,14 @@
               ? { status: 'miss' }
               : { status: 'error', message: outcome.message }
         settled += 1
+        // First paint must not wait for the slowest of N dictionaries: show
+        // the first match that lands (preferring the requested dictionary),
+        // and let the tab bar fill in as the rest settle.
+        if (outcome.kind === 'ok') {
+          const shown = tab
+          const shown_ok = shown !== null && results[shown]?.status === 'ok'
+          if (!shown_ok && (name === words.dict || shown === null)) tab = name
+        }
       }),
     )
     if (id !== request_id) return
@@ -229,33 +233,6 @@
       .catch(() => {
         if (!cancelled) did_you_mean = []
       })
-    return () => {
-      cancelled = true
-    }
-  })
-
-  // Markdown is fetched for the selected tab only, on demand: the server runs the
-  // conversion in a blocking task, so requesting nine of them up front would be
-  // wasteful when the reader usually looks at one.
-  $effect(() => {
-    const word = words.word
-    const name = tab
-    if (!word || !name) {
-      markdown = null
-      return
-    }
-    const key = `${word}\u0000${name}`
-    const cached = md_cache.get(key)
-    if (cached !== undefined) {
-      markdown = cached || null
-      return
-    }
-    markdown = null
-    let cancelled = false
-    void fetch_markdown(word, name).then((md) => {
-      md_cache.set(key, md ?? '')
-      if (!cancelled && words.word === word && tab === name) markdown = md || null
-    })
     return () => {
       cancelled = true
     }
@@ -365,9 +342,7 @@
       {#snippet panel({ item })}
         {#if item.value === tab}
           <EntryToolbar
-            bind:view={settings.view}
             bind:find_open
-            {markdown}
             word={words.word}
             dict={item.value}
             fullscreen_target={entry_wrap}
@@ -414,20 +389,7 @@
 
           <div class="entry-columns" class:entry-columns--solo={toc_items.length < 2}>
             <div class="entry-wrap" bind:this={entry_wrap}>
-              {#if settings.view === 'markdown'}
-                {#if markdown === null}
-                  <div class="spinner-wrap"><Spinner text="Converting to Markdown…" /></div>
-                {:else}
-                  <CodeBlock
-                    class="md-view"
-                    style="--font-scale:{settings.font_scale}"
-                    code={markdown}
-                    language="markdown"
-                    label="Markdown conversion"
-                    wrap
-                  />
-                {/if}
-              {:else if entry}
+              {#if entry}
                 <EntryView {entry} dict={item.value} word={words.word} bind:find_open {on_image} on_word={navigate} />
               {/if}
             </div>

@@ -25,11 +25,6 @@
     { value: 'dark' as const, label: 'Dark' },
   ]
 
-  const view_options = [
-    { value: 'styled' as const, label: 'Entry' },
-    { value: 'markdown' as const, label: 'Markdown' },
-  ]
-
   // Mirrors the `--accent` tokens in styles/base.css; picking either one again
   // clears the override rather than pinning the theme's own color.
   const THEME_ACCENTS = ['#8c4a2f', '#e0906a']
@@ -134,14 +129,6 @@
       </SettingsGroup>
 
       <SettingsGroup title="Reading" open>
-        <SettingsSection title="Default view">
-          <ButtonGroup options={view_options} label="Default view" bind:value={settings.view} />
-          <p class="settings-row__hint">
-            “Entry” renders the publisher's markup, styled here. “Markdown” asks the server for its
-            plain-text conversion instead.
-          </p>
-        </SettingsSection>
-
         <SettingsSection title="Hover previews">
           <div class="settings-row__head">
             <Toggle bind:checked={settings.previews}>

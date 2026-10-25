@@ -1010,17 +1010,6 @@ input[type='range'] {
   font-variant-numeric: tabular-nums;
 }
 
-.md-view {
-  /* CodeBlock renders the server's Markdown conversion; these are its knobs. */
-  --code-block-bg: var(--bg-sunken);
-  --code-block-radius: var(--radius-sm);
-  --code-block-padding: 0.9rem 1.1rem;
-  --code-block-font-size: calc(0.86rem * var(--font-scale, 1));
-  --code-font: var(--read-font);
-  max-width: var(--measure);
-  color: var(--fg);
-}
-
 .app-footer {
   border-top: 1px solid var(--border);
   color: var(--fg-faint);

@@ -1,31 +1,35 @@
 <script lang="ts">
-  import { ButtonGroup, CopyButton, FullscreenButton, Icon, NumberRangeInput } from 'svelte-widgets'
-  import { FormatText, Markdown, Star, StarOutline, TextSearch } from 'svelte-widgets/icons'
+  import { CopyButton, FullscreenButton, Icon, NumberRangeInput } from 'svelte-widgets'
+  import { Star, StarOutline, TextSearch } from 'svelte-widgets/icons'
+  import { fetch_markdown } from '../lib/api.js'
   import { toast } from 'svelte-widgets/toast-queue'
   import { FONT_SCALE_MAX, FONT_SCALE_MIN, settings } from '../lib/settings.svelte.js'
   import { in_wordlist, toggle_wordlist } from '../lib/wordlist.svelte.js'
-  import type { EntryView as ViewMode } from '../lib/settings.svelte.js'
 
   let {
-    view = $bindable<ViewMode>('styled'),
     find_open = $bindable(false),
-    markdown = null as string | null,
     word,
     dict,
     fullscreen_target = null as HTMLElement | null,
   }: {
-    view?: ViewMode
     find_open?: boolean
-    markdown?: string | null
     word: string
     dict: string
     fullscreen_target?: HTMLElement | null
   } = $props()
 
-  const view_options = [
-    { value: 'styled' as const, label: 'Entry', icon: FormatText },
-    { value: 'markdown' as const, label: 'Markdown', icon: Markdown },
-  ]
+  // The server's Markdown conversion costs ~150 ms on a large entry, so it is
+  // fetched on intent — hovering or focusing the copy button — not per tab.
+  let markdown = $state<string | null>(null)
+  let fetching = false
+
+  function prefetch_markdown() {
+    if (markdown !== null || fetching) return
+    fetching = true
+    void fetch_markdown(word, dict)
+      .then((md) => (markdown = md))
+      .finally(() => (fetching = false))
+  }
 
   const starred = $derived(in_wordlist(word))
 
@@ -39,8 +43,6 @@
 </script>
 
 <div class="toolbar">
-  <ButtonGroup options={view_options} label="Entry format" bind:value={view} />
-
   <button
     class="tool-btn"
     type="button"
@@ -51,12 +53,16 @@
     <Icon icon={TextSearch} width={16} height={16} />
   </button>
 
-  <CopyButton
-    class="tool-btn"
-    content={markdown ?? `Loading the Markdown for “${word}”…`}
-    disabled={markdown === null}
-    title={markdown === null ? 'Markdown still loading' : `Copy “${word}” from ${dict} as Markdown`}
-  />
+  <!-- svelte-ignore a11y_no_static_element_interactions -- the handlers only
+       prefetch; the interactive element remains the CopyButton inside. -->
+  <span onpointerenter={prefetch_markdown} onfocusin={prefetch_markdown} class="copy-wrap">
+    <CopyButton
+      class="tool-btn"
+      content={markdown ?? `Loading the Markdown for “${word}”…`}
+      disabled={markdown === null}
+      title={markdown === null ? 'Preparing the Markdown…' : `Copy “${word}” from ${dict} as Markdown`}
+    />
+  </span>
 
   <button
     class="tool-btn"
@@ -115,6 +121,9 @@
     border-color: var(--accent);
     background: var(--accent-soft);
   }
+  .copy-wrap {
+    display: contents;
+  }
   .font-scale {
     display: flex;
     align-items: center;
@@ -122,7 +131,10 @@
     min-width: 11rem;
   }
   @media (max-width: 600px) {
-    .font-scale {
+    .copy-wrap {
+    display: contents;
+  }
+  .font-scale {
       display: none;
     }
   }
