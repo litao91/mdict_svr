@@ -6,8 +6,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
+    body::Body,
     extract::{Path, Query, State},
-    http::{header, HeaderMap, StatusCode, Uri},
+    http::{header, HeaderMap, Request, StatusCode, Uri},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::get,
     Json, Router,
@@ -64,6 +66,13 @@ pub struct AppState {
     /// Transcoded clips keyed by `dict\u0000path`. A Speex clip is a few KB in
     /// and ~100 KB of WAV out, so caching beats re-decoding on every replay.
     transcode_cache: Mutex<HashMap<String, Arc<Vec<u8>>>>,
+    /// Markdown conversions keyed by `dict\u0000word`. The databases are
+    /// immutable and the conversion is the slowest thing this server does
+    /// (~150 ms for a 237 KB entry), so a hit is pure win.
+    md_cache: Mutex<HashMap<String, Arc<String>>>,
+    /// Gzipped bytes for immutable assets, keyed by path: compressing a
+    /// 400 KB bundle costs ~10 ms per request otherwise.
+    gz_cache: Mutex<HashMap<String, Arc<Vec<u8>>>>,
 }
 
 impl AppState {
@@ -77,6 +86,8 @@ impl AppState {
             web,
             ffmpeg,
             transcode_cache: Mutex::new(HashMap::new()),
+            md_cache: Mutex::new(HashMap::new()),
+            gz_cache: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -113,7 +124,10 @@ pub fn router(state: Arc<AppState>) -> Router {
     } else {
         router
     };
-    router.fallback(fallback_resource).with_state(state)
+    router
+        .fallback(fallback_resource)
+        .layer(middleware::from_fn_with_state(Arc::clone(&state), compress))
+        .with_state(state)
 }
 
 async fn health() -> &'static str {
@@ -322,16 +336,43 @@ async fn respond_definition(st: &Arc<AppState>, word: &str, dict: Option<&str>, 
             .into_response(),
         Format::Markdown => {
             // Convert each dictionary's HTML off the async worker, then combine.
-            let htmls: Vec<String> = matches.iter().map(|(_, h)| h.clone()).collect();
-            let fallback = htmls.clone();
-            let mds = tokio::task::spawn_blocking(move || {
-                htmls
-                    .iter()
-                    .map(|h| html_to_markdown(h))
-                    .collect::<Vec<String>>()
-            })
-            .await
-            .unwrap_or(fallback);
+            // Conversions are cached: the stores are immutable, and hover
+            // previews plus the copy button ask for the same word repeatedly.
+            let mut mds: Vec<Option<Arc<String>>> = vec![None; matches.len()];
+            let mut pending: Vec<(usize, String, String)> = Vec::new();
+            {
+                let cache = st.md_cache.lock().await;
+                for (i, (name, _)) in matches.iter().enumerate() {
+                    let key = format!("{name}\u{0}{word}");
+                    match cache.get(&key) {
+                        Some(md) => mds[i] = Some(md.clone()),
+                        None => pending.push((i, key, matches[i].1.clone())),
+                    }
+                }
+            }
+            if !pending.is_empty() {
+                let converted = tokio::task::spawn_blocking(move || {
+                    pending
+                        .into_iter()
+                        .map(|(i, key, html)| (i, key, html_to_markdown(&html)))
+                        .collect::<Vec<_>>()
+                })
+                .await
+                .unwrap_or_default();
+                let mut cache = st.md_cache.lock().await;
+                for (i, key, md) in converted {
+                    if cache.len() >= MD_CACHE_CAP {
+                        cache.clear();
+                    }
+                    let shared = Arc::new(md);
+                    cache.insert(key, shared.clone());
+                    mds[i] = Some(shared);
+                }
+            }
+            let mds: Vec<String> = mds
+                .into_iter()
+                .map(|md| md.map(|m| (*m).clone()).unwrap_or_default())
+                .collect();
 
             let body = if multi {
                 matches
@@ -650,7 +691,15 @@ pub(crate) async fn serve_resource(st: &AppState, dict: Option<&str>, path: &str
     match resource_bytes(st, dict, path) {
         Ok(bytes) => {
             let mime = mime_guess::from_path(path).first_or_octet_stream();
-            ([(header::CONTENT_TYPE, mime.as_ref())], bytes).into_response()
+            // A .qmd store never changes, so neither do the bytes it serves.
+            (
+                [
+                    (header::CONTENT_TYPE, mime.as_ref()),
+                    (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+                ],
+                bytes,
+            )
+                .into_response()
         }
         Err(response) => response,
     }
@@ -838,9 +887,151 @@ async fn fallback_resource(
     serve_resource(&st, q.dict.as_deref(), uri.path()).await
 }
 
+/// Entries in the Markdown cache; cleared wholesale rather than tracked per
+/// key, since a dictionary set is fixed for the life of the process.
+const MD_CACHE_CAP: usize = 1024;
+const GZ_CACHE_CAP: usize = 256;
+/// Not worth the latency or the header churn.
+const GZ_MIN_BYTES: usize = 1024;
+const GZ_MAX_BYTES: usize = 16 << 20;
+
+fn gz_encode(raw: &[u8], best: bool) -> Option<Vec<u8>> {
+    use std::io::Write;
+    // Immutable assets are compressed once and cached, so they earn the slow
+    // level; dynamic responses pay per request and take the fast one.
+    let level = if best {
+        flate2::Compression::best()
+    } else {
+        flate2::Compression::fast()
+    };
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), level);
+    enc.write_all(raw).ok()?;
+    enc.finish().ok()
+}
+
+fn is_compressible(content_type: &str) -> bool {
+    content_type.starts_with("text/")
+        || content_type.contains("json")
+        || content_type.contains("javascript")
+        || content_type.contains("markdown")
+        || content_type.contains("xml")
+}
+
+/// Gzip every compressible response. Dictionary HTML runs to 237 KB and the
+/// bundle to 400 KB; on the wire that is the difference between a fast lookup
+/// and a slow one, and nothing else in this binary spoke `Content-Encoding`.
+async fn compress(State(st): State<Arc<AppState>>, req: Request<Body>, next: Next) -> Response {
+    let wants_gzip = req
+        .headers()
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.contains("gzip"));
+    let path = req.uri().path().to_owned();
+    let res = next.run(req).await;
+    if !wants_gzip {
+        return res;
+    }
+    let content_type = res
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_owned();
+    if !is_compressible(&content_type) || res.headers().contains_key(header::CONTENT_ENCODING) {
+        return res;
+    }
+    let immutable = res
+        .headers()
+        .get(header::CACHE_CONTROL)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.contains("immutable"));
+    if immutable {
+        if let Some(gz) = st.gz_cache.lock().await.get(&path) {
+            let (parts, _) = res.into_parts();
+            return gz_response(parts, gz.as_ref().clone());
+        }
+    }
+    let (parts, body) = res.into_parts();
+    let declared = parts
+        .headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<usize>().ok());
+    if declared.is_some_and(|n| n > GZ_MAX_BYTES) {
+        return Response::from_parts(parts, Body::empty());
+    }
+    let Ok(raw) = axum::body::to_bytes(body, GZ_MAX_BYTES).await else {
+        return Response::from_parts(parts, Body::empty());
+    };
+    if raw.len() < GZ_MIN_BYTES {
+        return Response::from_parts(parts, Body::from(raw));
+    }
+    // `Bytes::clone` is a refcount bump, so the fallback path keeps the body
+    // without a second copy while the encoder thread borrows it.
+    let shared = raw.clone();
+    let encoded = tokio::task::spawn_blocking(move || gz_encode(&shared, immutable))
+        .await
+        .ok()
+        .flatten();
+    let Some(gz) = encoded else {
+        return Response::from_parts(parts, Body::from(raw));
+    };
+    if gz.len() >= raw.len() {
+        return Response::from_parts(parts, Body::from(raw));
+    }
+    if immutable {
+        let mut cache = st.gz_cache.lock().await;
+        if cache.len() >= GZ_CACHE_CAP {
+            cache.clear();
+        }
+        cache.insert(path, Arc::new(gz.clone()));
+    }
+    gz_response(parts, gz)
+}
+
+/// Swap in a gzipped body and the headers that make it decodable. The stale
+/// `Content-Length` has to go or the client waits for the uncompressed size.
+fn gz_response(mut parts: axum::http::response::Parts, gz: Vec<u8>) -> Response {
+    parts.headers.remove(header::CONTENT_LENGTH);
+    parts
+        .headers
+        .insert(header::CONTENT_ENCODING, header::HeaderValue::from_static("gzip"));
+    parts
+        .headers
+        .insert(header::VARY, header::HeaderValue::from_static("accept-encoding"));
+    Response::from_parts(parts, Body::from(gz))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{parse_format, rewrite_urls, Format};
+    use super::{gz_encode, is_compressible, parse_format, rewrite_urls, Format};
+
+    #[test]
+    fn gzip_round_trips() {
+        let raw = b"apple apple apple apple apple apple apple apple".to_vec();
+        let gz = gz_encode(&raw, false).unwrap();
+        assert!(gz.len() < raw.len());
+        let mut dec = flate2::read::GzDecoder::new(&gz[..]);
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(&mut dec, &mut out).unwrap();
+        assert_eq!(out, raw);
+    }
+
+    #[test]
+    fn only_text_like_types_are_compressed() {
+        for t in [
+            "text/html; charset=utf-8",
+            "application/json",
+            "text/javascript",
+            "text/markdown; charset=utf-8",
+        ] {
+            assert!(is_compressible(t), "{t}");
+        }
+        for t in ["audio/mpeg", "audio/wav", "image/jpeg", "application/octet-stream"] {
+            assert!(!is_compressible(t), "{t}");
+        }
+    }
+
     use axum::http::{header, HeaderMap, HeaderValue};
 
     #[test]
