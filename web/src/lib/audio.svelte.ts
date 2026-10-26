@@ -160,10 +160,15 @@ export interface PlayMeta {
  * Start (or restart) playback of a reference the sanitizer already marked
  * playable. Unsupported codecs never reach here — see `reject`.
  */
-export function play(url: string, meta: PlayMeta = {}): void {
+export function play(
+  url: string,
+  meta: PlayMeta = {},
+  opts: { converted?: boolean } = {},
+): void {
   // Defensive: the sanitizer already marks unplayable refs, but `play` is public
-  // and a codec check here costs nothing.
-  if (!audio_is_playable(url)) {
+  // and a codec check here costs nothing. `converted` skips it: the server
+  // re-encodes these at the resource URL, so the extension lies.
+  if (!opts.converted && !audio_is_playable(url)) {
     reject(url, meta.dict ?? null)
     return
   }
@@ -221,47 +226,6 @@ function download_action(url: string | null) {
       a.click()
     },
   }
-}
-
-/**
- * Map a resource reference onto the server's transcoder. `/res/{dict}/{path}`
- * keeps its dictionary; anything else searches every store, exactly like the
- * asset fallback does.
- */
-export function transcode_url_for(href: string, dict: string | null): string {
-  const segments = href.split('/')
-  const path =
-    segments[1] === 'res' && segments.length > 3 ? segments.slice(3).join('/') : href.replace(/^\//, '')
-  const scope = dict ? `?dict=${encodeURIComponent(dict)}` : ''
-  return `/transcode/${path}${scope}`
-}
-
-/**
- * Play a codec the browser cannot decode by asking the server to re-encode it
- * on the fly. `player.url` keeps the original reference so the "now playing"
- * highlight and the download fallback stay honest about what is stored.
- */
-export function play_via_server(url: string, dict: string | null, meta: PlayMeta = {}): void {
-  const audio = element()
-  if (!audio) {
-    toast.show('Audio is not available in this environment', { priority: 'error' })
-    return
-  }
-  player.url = url
-  player.dict = meta.dict ?? dict
-  player.label = meta.label ?? file_label(url)
-  player.variant = meta.variant ?? null
-  player.reason = null
-  player.position = 0
-  player.duration = 0
-  player.status = 'loading'
-  audio.src = transcode_url_for(url, dict)
-  audio.volume = player.volume
-  audio.playbackRate = player.rate
-  audio.loop = player.loop
-  void audio.play().catch(() => {
-    /* the error listener does the real diagnosis */
-  })
 }
 
 export function toggle(url: string, meta: PlayMeta = {}): void {

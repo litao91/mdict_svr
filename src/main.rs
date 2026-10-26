@@ -417,6 +417,32 @@ fn scan_qmd_dir(root: &Path) -> Result<(Vec<(String, PathBuf)>, Vec<ResSpec>)> {
     Ok((dicts, resources))
 }
 
+/// The decoder behind `/transcode` and the transparent `/res` conversion:
+/// an explicit `--ffmpeg` wins, then `$MDICT_FFMPEG`, then `ffmpeg` on `PATH`.
+/// A flag pointing at nothing is an error; a missing discovery is not, because
+/// the server is fully functional without it — Speex just stays download-only.
+fn locate_ffmpeg(explicit: Option<PathBuf>) -> Result<Option<PathBuf>> {
+    if let Some(path) = explicit {
+        let canon = path
+            .canonicalize()
+            .with_context(|| format!("resolving ffmpeg {}", path.display()))?;
+        if !canon.is_file() {
+            bail!("--ffmpeg {}: not a file", canon.display());
+        }
+        return Ok(Some(canon));
+    }
+    let from_env = std::env::var_os("MDICT_FFMPEG").map(PathBuf::from);
+    let from_path = std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|dir| dir.join("ffmpeg"))
+            .find(|f| f.is_file())
+    });
+    Ok(from_env
+        .or(from_path)
+        .and_then(|p| p.canonicalize().ok())
+        .filter(|p| p.is_file()))
+}
+
 async fn cmd_serve(
     db: Vec<String>,
     res: Vec<String>,
@@ -432,18 +458,15 @@ async fn cmd_serve(
         ),
         None => None,
     };
-    let ffmpeg = match ffmpeg {
-        Some(path) => {
-            let canon = path
-                .canonicalize()
-                .with_context(|| format!("resolving ffmpeg {}", path.display()))?;
-            if !canon.is_file() {
-                bail!("--ffmpeg {}: not a file", canon.display());
-            }
+    let ffmpeg = match locate_ffmpeg(ffmpeg)? {
+        Some(canon) => {
             println!("transcoding undecodable audio with {}", canon.display());
             Some(canon)
         }
-        None => None,
+        None => {
+            println!("no ffmpeg found: Ogg-Speex audio will be offered as a download instead");
+            None
+        }
     };
 
     let mut dict_specs: Vec<(String, PathBuf)> = Vec::new();

@@ -690,6 +690,16 @@ pub struct ResourceQuery {
 pub(crate) async fn serve_resource(st: &AppState, dict: Option<&str>, path: &str) -> Response {
     match resource_bytes(st, dict, path) {
         Ok(bytes) => {
+            // Speex and friends cannot be played by any browser, so with a
+            // decoder configured the conversion happens here, at the URL the
+            // definition already points at. Without one, or if the decode
+            // fails, the stored bytes go out untouched and the UI explains.
+            if st.ffmpeg.is_some() && undecodable_audio(path) {
+                let key = format!("res\u{0}{}\u{0}{}", dict.unwrap_or(""), path);
+                if let Ok(wav) = convert_audio(st, &key, bytes.clone()).await {
+                    return wav_response(wav);
+                }
+            }
             let mime = mime_guess::from_path(path).first_or_octet_stream();
             // A .qmd store never changes, so neither do the bytes it serves.
             (
@@ -760,62 +770,49 @@ fn resource_bytes(st: &AppState, dict: Option<&str>, path: &str) -> Result<Vec<u
 /// should be re-encoding on demand.
 const MAX_TRANSCODE_INPUT: usize = 8 << 20;
 
-/// Decode a stored audio file no browser can play — in practice Ogg-Speex `.spx`,
-/// which CALD4 and the Sound libraries use for every pronunciation — into PCM WAV,
-/// which all of them can. Speex has neither a browser decoder nor a pure-Rust
-/// one, so this shells out to an external ffmpeg (`serve --ffmpeg`); without it
-/// the route answers 501 and the UI keeps offering the file as a download.
-///
-/// The path is resolved through the resource stores, never the filesystem, so
-/// there is nothing to traverse.
-async fn transcode(
-    State(st): State<Arc<AppState>>,
-    Path(path): Path<String>,
-    Query(q): Query<ResourceQuery>,
-) -> Response {
+/// Codecs no browser ships a decoder for. `.spx` is the one that matters:
+/// CALD4, `Sound` and `Sound-en_GB` store every pronunciation in Ogg-Speex, and
+/// `mime_guess` would happily serve it as `audio/ogg` for `<audio>` to fail at
+/// decode time with a 200 status.
+pub fn undecodable_audio(path: &str) -> bool {
+    let ext = path.rsplit('.').next().unwrap_or("");
+    let ext = if ext.len() <= 4 { ext.to_ascii_lowercase() } else { String::new() };
+    matches!(ext.as_str(), "spx" | "wma" | "amr" | "mid")
+}
+
+enum ConvertError {
+    NoDecoder,
+    TooLarge(usize),
+    Undecodable(String),
+}
+
+/// Decode stored audio into PCM WAV, memoized. Shared by `/res` (which converts
+/// transparently and falls back to the raw bytes on failure) and `/transcode`
+/// (which reports the failure).
+async fn convert_audio(st: &AppState, key: &str, input: Vec<u8>) -> Result<Arc<Vec<u8>>, ConvertError> {
     let Some(ffmpeg) = st.ffmpeg.clone() else {
-        return (
-            StatusCode::NOT_IMPLEMENTED,
-            Json(json!({ "error": "transcoding not configured" })),
-        )
-            .into_response();
+        return Err(ConvertError::NoDecoder);
     };
-    if path.is_empty() || path.ends_with('/') {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "resource not found", "path": path })),
-        )
-            .into_response();
+    if let Some(cached) = st.transcode_cache.lock().await.get(key) {
+        return Ok(cached.clone());
     }
-    let key = format!("{}\u{0}{}", q.dict.as_deref().unwrap_or(""), path);
-    if let Some(cached) = st.transcode_cache.lock().await.get(&key) {
-        return wav_response(cached.clone());
-    }
-    let input = match resource_bytes(&st, q.dict.as_deref(), &path) {
-        Ok(bytes) => bytes,
-        Err(response) => return response,
-    };
     if input.len() > MAX_TRANSCODE_INPUT {
-        return (
-            StatusCode::PAYLOAD_TOO_LARGE,
-            Json(json!({ "error": "audio too large to transcode", "bytes": input.len() })),
-        )
-            .into_response();
+        return Err(ConvertError::TooLarge(input.len()));
     }
+    let key_owned = key.to_owned();
     let decoded = tokio::task::spawn_blocking(move || run_ffmpeg(&ffmpeg, &input))
         .await
         .unwrap_or_else(|e| Err(format!("transcode task failed: {e}")));
     match decoded {
         Ok(wav) => {
             let wav = Arc::new(wav);
-            st.transcode_cache.lock().await.insert(key, wav.clone());
-            wav_response(wav)
+            st.transcode_cache
+                .lock()
+                .await
+                .insert(key_owned, wav.clone());
+            Ok(wav)
         }
-        Err(detail) => (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(json!({ "error": "undecodable audio", "detail": detail })),
-        )
-            .into_response(),
+        Err(detail) => Err(ConvertError::Undecodable(detail)),
     }
 }
 
@@ -824,11 +821,56 @@ fn wav_response(wav: Arc<Vec<u8>>) -> Response {
         [
             (header::CONTENT_TYPE, "audio/wav"),
             // The input is immutable, so the output is too.
-            (header::CACHE_CONTROL, "public, max-age=604800"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
         ],
         (*wav).clone(),
     )
         .into_response()
+}
+
+/// Decode a stored audio file no browser can play — in practice Ogg-Speex
+/// `.spx`, which CALD4 and the Sound libraries use for every pronunciation.
+/// `/res` already converts these transparently when a decoder is configured;
+/// this route is the explicit form, for clients that want the conversion
+/// named in the URL and the failures reported rather than fallen back from.
+///
+/// The path is resolved through the resource stores, never the filesystem, so
+/// there is nothing to traverse.
+async fn transcode(
+    State(st): State<Arc<AppState>>,
+    Path(path): Path<String>,
+    Query(q): Query<ResourceQuery>,
+) -> Response {
+    if path.is_empty() || path.ends_with('/') {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "resource not found", "path": path })),
+        )
+            .into_response();
+    }
+    let key = format!("{}\u{0}{}", q.dict.as_deref().unwrap_or(""), path);
+    let input = match resource_bytes(&st, q.dict.as_deref(), &path) {
+        Ok(bytes) => bytes,
+        Err(response) => return response,
+    };
+    match convert_audio(&st, &key, input).await {
+        Ok(wav) => wav_response(wav),
+        Err(ConvertError::NoDecoder) => (
+            StatusCode::NOT_IMPLEMENTED,
+            Json(json!({ "error": "transcoding not configured" })),
+        )
+            .into_response(),
+        Err(ConvertError::TooLarge(bytes)) => (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(json!({ "error": "audio too large to transcode", "bytes": bytes })),
+        )
+            .into_response(),
+        Err(ConvertError::Undecodable(detail)) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": "undecodable audio", "detail": detail })),
+        )
+            .into_response(),
+    }
 }
 
 fn run_ffmpeg(ffmpeg: &std::path::Path, input: &[u8]) -> Result<Vec<u8>, String> {

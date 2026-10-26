@@ -690,7 +690,7 @@ mdict_svr serve --db <NAME=PATH|PATH|DIR> [--db ...] [--res <NAME=PATH|PATH|DIR>
 | --- | --- | --- |
 | `--db <spec>` | yes (repeatable) | A dictionary. `NAME=PATH`, a bare `PATH` to a `.qmd` (name = file stem), **or a directory** (scanned recursively for `*.qmd`). |
 | `--res <spec>` | no (repeatable) | A resource store. `NAME=PATH` attaches to dictionary `NAME`; a bare `PATH` attaches to the sole dictionary (ambiguous with several → error); a directory is scanned for `*.res.qmd`. |
-| `--ffmpeg <PATH>` | no | ffmpeg binary used by `GET /transcode` to decode audio no browser can play (Ogg-Speex `.spx`). Without it those files stay download-only. |
+| `--ffmpeg <PATH>` | no | ffmpeg binary used to decode audio no browser can play (Ogg-Speex `.spx`). Defaults to `$MDICT_FFMPEG`, then `ffmpeg` on `PATH`; without any of them those files stay download-only. |
 | `--web <DIR>` | no | Serve a built web UI (the `web/dist` output of the Svelte frontend) from the same origin. The directory must contain `index.html` or `serve` exits with an error. Without it the API-only behaviour is unchanged. |
 | `--addr <ADDR>` | no | Bind address, default `127.0.0.1:8080`. |
 

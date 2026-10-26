@@ -61,16 +61,22 @@ info DB:
 
 # ── serve ──────────────────────────────────────────────────────────────────
 
+# ffmpeg used to convert Ogg-Speex pronunciation audio; empty disables it
+ffmpeg := env_var_or_default("MDICT_FFMPEG", "web/node_modules/ffmpeg-static/ffmpeg")
+
 # Serve the HTTP API for every dictionary under $MDICT_DATA (default ./data)
 serve: build
-    ./target/debug/mdict_svr serve --db {{data}} --addr {{addr}}
+    #!/usr/bin/env bash
+    args=(--db {{data}} --addr {{addr}})
+    [ -x "{{ffmpeg}}" ] && args+=(--ffmpeg "{{ffmpeg}}")
+    ./target/debug/mdict_svr serve "${args[@]}"
 
 # Serve the API and the built web UI from one origin (run web-build first)
 serve-web: build
-    ./target/debug/mdict_svr serve --db {{data}} --web web/dist --addr {{addr}}
-
-# ffmpeg used by /transcode to play Ogg-Speex; empty disables transcoding
-ffmpeg := env_var_or_default("MDICT_FFMPEG", "web/node_modules/ffmpeg-static/ffmpeg")
+    #!/usr/bin/env bash
+    args=(--db {{data}} --web web/dist --addr {{addr}})
+    [ -x "{{ffmpeg}}" ] && args+=(--ffmpeg "{{ffmpeg}}")
+    ./target/debug/mdict_svr serve "${args[@]}"
 
 # Serve as the browser verification does: the Sound store attached explicitly
 # (directory scanning skips Sound_us_uk.res.qmd) and Speex transcoding on

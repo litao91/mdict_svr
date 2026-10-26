@@ -11,8 +11,7 @@
 import { toast } from 'svelte-widgets/toast-queue'
 import { tooltip } from 'svelte-widgets/attachments'
 import { fetch_markdown } from './api.js'
-import { detect_variant, play_via_server, reject, toggle } from './audio.svelte.js'
-import { dicts } from './dicts.svelte.js'
+import { detect_variant, play, reject, toggle } from './audio.svelte.js'
 import { open_wordpop } from './wordpop.svelte.js'
 
 export interface EntryCallbacks {
@@ -112,12 +111,13 @@ export function attach_entry_behavior(host: HTMLElement, cb: EntryCallbacks): ()
         marked = a
         a.classList.add('is-playing')
         toggle(url, { dict: dict(), label: word(), variant: detect_variant(url, a) })
-      } else if (dicts.transcode) {
-        // The browser cannot decode this codec, but the server can re-encode it.
+      } else if (a.dataset.playable === '2') {
+        // The browser cannot decode this codec, but the server converts it at
+        // the resource URL, so the original href is the right src.
         clear_marked()
         marked = a
         a.classList.add('is-playing')
-        play_via_server(url, dict(), { label: word(), variant: detect_variant(url, a) })
+        play(url, { dict: dict(), label: word(), variant: detect_variant(url, a) }, { converted: true })
       } else {
         reject(url, dict())
       }

@@ -244,9 +244,11 @@ await wait_entry('OALD9')
 await goto_word('apple', 'CALD4')
 await wait_entry('CALD4')
 {
-  const unplayable = page.locator('.entry a[data-audio][data-playable="0"]')
+  const marker = TRANSCODE_BASE ? '2' : '0'
+  const unplayable = page.locator(`.entry a[data-audio][data-playable="${marker}"]`)
   const n = await unplayable.count()
-  check('CALD4 apple marks .spx as not natively playable', n > 0, `${n} anchors`)
+  check(`CALD4 apple marks .spx as ${TRANSCODE_BASE ? 'server-convertible' : 'unplayable'}`,
+    n > 0, `${n} anchors with data-playable=${marker}`)
   media_responses.length = 0
   await unplayable.first().click()
   await page.waitForSelector('.player', { timeout: 8000 }).catch(() => {})
@@ -261,10 +263,12 @@ await wait_entry('CALD4')
       download: !!document.querySelector('.player a[download]'),
     }
   })
-  const wav = media_responses.find((r) => /\/transcode\//.test(r.url))
+  // The conversion now happens at the resource URL itself, so the <audio>
+  // element asks for the .spx and receives WAV.
+  const wav = media_responses.find((r) => /\.spx(\?|$)/.test(r.url))
   if (TRANSCODE_BASE) {
-    check('clicking .spx asks the server to transcode it', !!wav, JSON.stringify(media_responses))
-    check('the transcode answer is WAV and it plays',
+    check('the .spx resource is converted before serving', !!wav, JSON.stringify(media_responses))
+    check('the converted answer is WAV and it plays',
       wav?.status === 200 && wav?.type === 'audio/wav' && info.seek_max > 0 && !info.warned,
       `${JSON.stringify(wav)} seek_max=${info.seek_max} "${info.text.slice(0, 80)}"`)
   } else {

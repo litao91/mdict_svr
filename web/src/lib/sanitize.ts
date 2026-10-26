@@ -18,6 +18,7 @@
  */
 
 import { color_pair, split_style_color } from './colors.js'
+import { dicts } from './dicts.svelte.js'
 
 /** Dropped along with their entire subtree. */
 const DROP_TAGS = new Set([
@@ -136,6 +137,13 @@ function resolve_ref(trimmed: string, dict: string, has_resources: boolean): str
   if (!has_resources) return rooted + tail
   return `/res/${encode_segment(dict)}${encode_path(rooted)}${tail}`
 }
+
+/**
+ * Codecs the server re-encodes to WAV when it has a decoder configured — the
+ * mirror of `undecodable_audio` in src/server.rs. With one, these anchors play
+ * from their original URL; without, they are the download-only case.
+ */
+const SERVER_CONVERTIBLE = new Set(['spx', 'wma', 'amr', 'mid'])
 
 /** Browser-decodable audio extensions. */
 const PLAYABLE_AUDIO = new Set(['mp3', 'm4a', 'mp4', 'wav', 'webm', 'flac', 'ogg', 'oga', 'opus'])
@@ -318,15 +326,24 @@ function give_audio_icon(el: Element, playable: boolean): void {
  */
 function tag_anchor(el: Element, url: string, stats: SanitizedEntry): void {
   if (is_audio_ref(el, url)) {
-    const playable = audio_is_playable(url)
+    const native = audio_is_playable(url)
+    // '2' = the browser cannot decode it, but the server converts it on the
+    // fly, so clicking plays the original URL. The marker describes what
+    // happens on click, not what the browser supports.
+    const converted =
+      !native && dicts.transcode && SERVER_CONVERTIBLE.has(extension_of_url(url))
+    const state = native ? '1' : converted ? '2' : '0'
     el.setAttribute('data-audio', '1')
-    el.setAttribute('data-playable', playable ? '1' : '0')
+    el.setAttribute('data-playable', state)
     el.setAttribute('data-src', url)
     el.setAttribute('role', 'button')
-    el.setAttribute('title', playable ? 'Play pronunciation' : 'Audio this browser cannot decode')
-    if (playable) stats.playable_audio += 1
-    else stats.unsupported_audio += 1
-    give_audio_icon(el, playable)
+    el.setAttribute(
+      'title',
+      native ? 'Play pronunciation' : converted ? 'Play pronunciation (converted by the server)' : 'Audio this browser cannot decode',
+    )
+    if (state === '0') stats.unsupported_audio += 1
+    else stats.playable_audio += 1
+    give_audio_icon(el, state !== '0')
     return
   }
 

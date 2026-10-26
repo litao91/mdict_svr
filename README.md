@@ -156,12 +156,13 @@ bounded Levenshtein pass; `*` and `?` wildcards search the whole index; and word
 can be starred into a persisted list exported as Anki, CSV or JSON. The player
 does 0.75×/1.25× and repeat for pronunciation practice.
 
-Audio that no browser can decode is handled up front: CALD4 and the Sound
-libraries store Ogg-Speex `.spx`, which the server reports as `200 audio/ogg` and
-`<audio>` then fails to *decode*. With `serve --ffmpeg <PATH>` the player asks
-`GET /transcode/{path}` to re-encode the clip to WAV on first play (cached after
-that); without a decoder configured it explains the codec and offers the file as
-a download instead of failing silently.
+Audio that no browser can decode is converted before serving: CALD4 and the
+Sound libraries store Ogg-Speex `.spx`, which a naive server reports as
+`200 audio/ogg` for `<audio>` to fail at *decode* time. When the server can find
+an ffmpeg (`--ffmpeg`, `$MDICT_FFMPEG`, or `PATH`) those resources are re-encoded
+to WAV on first request and served immutable from cache — at the original URL,
+so nothing client-side has to know. Without a decoder the player explains the
+codec and offers the file as a download instead of failing silently.
 
 ```bash
 cd web
@@ -176,9 +177,11 @@ npm run test:browser # headless-Chromium pass; needs a running `serve --web`
 Serve the build from the Rust binary so one command gives one origin:
 
 ```bash
-mdict_svr serve --db ./data --web web/dist --addr 127.0.0.1:8080 \
-    --ffmpeg $(command -v ffmpeg)   # optional: play Ogg-Speex by transcoding
+mdict_svr serve --db ./data --web web/dist --addr 127.0.0.1:8080
 ```
+
+(`just serve-web` passes the bundled `ffmpeg-static` binary; a system ffmpeg on
+`PATH` is picked up automatically and enables Speex conversion.)
 
 `--web` adds exactly three routes — `/`, `/index.html` (the shell, `no-cache`) and
 `/assets/*` (hashed output, immutable) — and both fall through to the asset
