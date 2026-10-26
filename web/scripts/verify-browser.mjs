@@ -881,6 +881,92 @@ await wait_entry('OALD9')
     `tabs[0]=${tabs[0]} sidebar[0]=${after_drag[0]}`)
   await shot('19-dict-order')
 }
+// ── 21. no stale entry, and the last dictionary sticks ────────────────────
+{
+  await goto_word('apple', 'OALD9')
+  await wait_entry('OALD9')
+  // Navigate in-app and sample the rendered entry the whole way: a results set
+  // tagged with the previous word used to sanitize (and cache) the old HTML
+  // under the new headword.
+  const box = page.locator('input[role="combobox"]').first()
+  await box.click()
+  await box.fill('')
+  await box.fill('banana')
+  const seen = new Set()
+  await box.press('Enter')
+  // Sample only after the navigation starts; before it the old entry is
+  // correctly still on screen.
+  for (let i = 0; i < 60; i++) {
+    const w = await page.evaluate(() => {
+      const e = [...document.querySelectorAll('.entry')].find((x) => x.getBoundingClientRect().height > 0)
+      return e?.dataset.word ?? null
+    })
+    if (w) seen.add(w)
+    await page.waitForTimeout(40)
+  }
+  check('an in-app navigation never renders the previous word’s entry',
+    !seen.has('apple') && seen.has('banana'), JSON.stringify([...seen]))
+  const head = await page.evaluate(() => {
+    const e = [...document.querySelectorAll('.entry')].find((x) => x.getBoundingClientRect().height > 0)
+    return e?.textContent?.replace(/\s+/g, ' ').slice(0, 40)
+  })
+  check('the rendered entry is the new word’s own text', /banana/i.test(head ?? ''), String(head))
+
+  // the tab bar and the visible panel always agree
+  const agree = await page.evaluate(() => {
+    const sel = document.querySelector('[role="tab"][aria-selected="true"]')
+    const vis = [...document.querySelectorAll('.entry')].find((x) => x.getBoundingClientRect().height > 0)
+    return !!sel && !!vis && sel.dataset.value === vis.dataset.dict
+  })
+  check('the selected tab owns the visible entry', agree)
+
+  // last-used dictionary becomes the default for the next word. No dict in the
+  // URL, so the click is a genuine choice rather than the URL's own preference.
+  await page.goto(`${BASE}/?word=apple`, { waitUntil: 'domcontentloaded' })
+  await wait_entry('OALD9', 25000)
+  const initial_tab = await page.locator('[role="tab"][aria-selected="true"]').getAttribute('data-value')
+  const tab_count = await page.locator('[role="tab"]').count()
+  const click_index = (await page.locator('[role="tab"]').nth(tab_count - 1).getAttribute('data-value')) === initial_tab ? 0 : tab_count - 1
+  await page.locator('[role="tab"]').nth(click_index).click()
+  await page.waitForTimeout(1200)
+  const chosen = await page.locator('[role="tab"][aria-selected="true"]').getAttribute('data-value')
+  check('choosing a tab is remembered as the preference', chosen !== initial_tab,
+    `initial=${initial_tab} chosen=${chosen}`)
+  await box.click()
+  await box.fill('')
+  await box.fill('banana')
+  await box.press('Enter')
+  await page.waitForTimeout(2500)
+  check('a new word opens in the dictionary last chosen',
+    (await page.locator('[role="tab"][aria-selected="true"]').getAttribute('data-value')) === chosen,
+    `chosen=${chosen}`)
+  // Carry localStorage (and therefore the preference) into a new context; the
+  // suite's own page lives in a default context that cannot spawn siblings.
+  const carried = await browser.newContext({
+    viewport: { width: 1440, height: 960 },
+    storageState: await page.context().storageState(),
+  })
+  const fresh = await carried.newPage()
+  await fresh.goto(`${BASE}/?word=hand`, { waitUntil: 'domcontentloaded' })
+  await fresh.waitForSelector('.entry', { timeout: 25000 })
+  await fresh.waitForTimeout(1500)
+  const fresh_pick = await fresh.locator('[role="tab"][aria-selected="true"]').getAttribute('data-value')
+  const fresh_store = await fresh.evaluate(() => localStorage.getItem('mdict.settings'))
+  check('the preference survives into a new page', fresh_pick === chosen,
+    `stored=${chosen} picked=${fresh_pick} settings=${fresh_store}`)
+  await carried.close()
+
+  const blank = await browser.newContext({ viewport: { width: 1440, height: 960 } })
+  const p4 = await blank.newPage()
+  await p4.goto(`${BASE}/?word=hand`, { waitUntil: 'domcontentloaded' })
+  await p4.waitForSelector('.entry', { timeout: 25000 })
+  await p4.waitForTimeout(1500)
+  const first_tab = await p4.locator('[role="tab"]').first().getAttribute('data-value')
+  check('without a stored preference the first dictionary wins',
+    (await p4.locator('[role="tab"][aria-selected="true"]').getAttribute('data-value')) === first_tab,
+    first_tab ?? '')
+  await blank.close()
+}
 
 await browser.close()
 

@@ -37,7 +37,18 @@
     | { status: 'error'; message: string }
 
   let results = $state<Record<string, Result>>({})
-  let tab = $state<string | null>(null)
+  /**
+   * The word `results` was fetched for. Effects flush *after* the render that
+   * follows a state change, so without this tag that render sanitizes the
+   * previous word's HTML under the new word — and caches it there, which makes
+   * the wrong entry stick rather than flash.
+   */
+  let results_word = $state('')
+  let nearby_word = $state('')
+  // Bound both ways: Tabs normalizes `value` into its item list internally
+  // (an absent value snaps to the first tab), and a one-way prop lets that
+  // snap diverge from the state that decides which panel renders.
+  let tab = $state<string | undefined>(undefined)
   let loading = $state(false)
   let settled = $state(0)
   let total = $state(0)
@@ -54,6 +65,12 @@
 
   // Tab order is the reader's order, not the order the fetches happened to
   // settle in, so reordering the sidebar rearranges open tabs immediately.
+  const fresh = $derived(results_word === words.word && results_word !== '')
+
+  // Deliberately NOT gated on `fresh`: handing Tabs an empty list for the one
+  // stale frame desyncs its internal selection from `value`, leaving the bar
+  // pointing at a dictionary whose panel is hidden. Old labels for a frame are
+  // harmless; the rendered entry is what `fresh` guards.
   const tab_items = $derived(
     ordered_enabled()
       .filter((d) => results[d.name]?.status === 'ok')
@@ -63,7 +80,7 @@
   const entry = $derived.by<SanitizedEntry | null>(() => {
     const word = words.word
     const name = tab
-    if (!word || !name) return null
+    if (!word || !name || results_word !== word) return null
     const result = results[name]
     if (!result || result.status !== 'ok') return null
     const key = `${word}\u0000${name}`
@@ -98,7 +115,10 @@
     })),
   )
 
+  const show_not_found = $derived(not_found && !loading && fresh)
+
   const errors = $derived.by(() => {
+    if (!fresh) return []
     const out: string[] = []
     for (const [name, r] of Object.entries(results)) {
       if (r.status === 'error') out.push(`${display_name(name)}: ${r.message}`)
@@ -119,6 +139,7 @@
    * and parsing nine of them would dominate the interaction.
    */
   async function run(word: string) {
+    const preferred = words.dict ?? settings.last_dict ?? ''
     const id = ++request_id
     controller?.abort()
     const ctrl = new AbortController()
@@ -131,12 +152,13 @@
     const next: Record<string, Result> = {}
     for (const name of targets) next[name] = { status: 'loading' }
     results = next
+    results_word = word
     total = targets.length
     settled = 0
     loading = targets.length > 0
     if (targets.length === 0) {
       not_found = false
-      tab = null
+      tab = undefined
       return
     }
 
@@ -162,8 +184,8 @@
         // and let the tab bar fill in as the rest settle.
         if (outcome.kind === 'ok') {
           const shown = tab
-          const shown_ok = shown !== null && results[shown]?.status === 'ok'
-          if (!shown_ok && (name === words.dict || shown === null)) tab = name
+          const shown_ok = shown !== undefined && results[shown]?.status === 'ok'
+          if (!shown_ok && (name === preferred || shown === undefined)) tab = name
         }
       }),
     )
@@ -172,7 +194,9 @@
     loading = false
     const matched = targets.filter((n) => results[n]?.status === 'ok')
     not_found = matched.length === 0
-    const wanted = words.dict && matched.includes(words.dict) ? words.dict : (matched[0] ?? null)
+    // The URL's dict wins (a shared link names it); otherwise the dictionary
+    // the reader last chose, so a new word opens where they were reading.
+    const wanted = matched.includes(preferred) ? preferred : (matched[0] ?? null)
     tab = wanted
     // Keep the URL in step with the tab, without adding a history entry.
     if (wanted && wanted !== words.dict) select_dict(wanted)
@@ -188,23 +212,28 @@
     void order
     if (!word) {
       results = {}
-      tab = null
+      results_word = ''
+      nearby_word = ''
+      tab = undefined
       not_found = false
       loading = false
       nearby = null
       did_you_mean = []
       return
     }
+    results_word = word
+    loading = true
     void run(word)
   })
 
   // The immediate neighbours come straight from the dictionary's sorted index,
   // scoped to the tab being read: exact, and never "unknown" the way the old
   // prefix-shrink through /suggest was.
-  const neighbours = $derived<{ prev: string | null; next: string | null }>({
-    prev: nearby?.prev.at(-1) ?? null,
-    next: nearby?.next[0] ?? null,
-  })
+  const neighbours = $derived<{ prev: string | null; next: string | null }>(
+    nearby_word === words.word
+      ? { prev: nearby?.prev.at(-1) ?? null, next: nearby?.next[0] ?? null }
+      : { prev: null, next: null },
+  )
 
   $effect(() => {
     const word = words.word
@@ -216,10 +245,15 @@
     let cancelled = false
     void fetch_nearby(word, { dict: name, before: 4, after: 4 })
       .then((found) => {
-        if (!cancelled) nearby = found ? { prev: found.prev, next: found.next } : null
+        if (cancelled) return
+        nearby = found ? { prev: found.prev, next: found.next } : null
+        nearby_word = word
       })
       .catch(() => {
-        if (!cancelled) nearby = null
+        if (!cancelled) {
+          nearby = null
+          nearby_word = word
+        }
       })
     return () => {
       cancelled = true
@@ -284,7 +318,7 @@
     {/if}
   </div>
 
-  {#if nearby && (nearby.prev.length > 0 || nearby.next.length > 0)}
+  {#if fresh && nearby && (nearby.prev.length > 0 || nearby.next.length > 0)}
     <nav class="nearby" aria-label="Words nearby">
       {#each [...nearby.prev, ...nearby.next] as w (w)}
         <button class="nearby__chip" type="button" onclick={() => navigate(w)}>{w}</button>
@@ -310,7 +344,7 @@
     <StatusMessage type="warning" message={errors.join(' · ')} />
   {/if}
 
-  {#if not_found && !loading}
+  {#if show_not_found}
     <div class="empty">
       <Icon icon={BookSearch} width={34} height={34} />
       <p><strong>“{words.word}” is not in any searched dictionary.</strong></p>
@@ -340,9 +374,10 @@
   {:else if tab_items.length > 0}
     <Tabs
       items={tab_items}
-      value={tab ?? undefined}
+      bind:value={tab}
       on_change={(value) => {
         tab = value
+        settings.last_dict = value
         select_dict(value)
       }}
       label="Dictionaries with this word"

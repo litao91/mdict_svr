@@ -23,6 +23,9 @@ export interface Settings {
   show_audio: boolean
   /** Custom accent color, or null for the theme's own. */
   accent: string | null
+  /** The dictionary tab the reader last chose; the default for a new word
+      when the URL does not name one. Null until they pick one. */
+  last_dict: string | null
 }
 
 export const FONT_SCALE_MIN = 0.85
@@ -35,6 +38,7 @@ const DEFAULTS: Settings = {
   previews: true,
   show_audio: true,
   accent: null,
+  last_dict: null,
 }
 
 function load(): Settings {
@@ -59,6 +63,7 @@ function load(): Settings {
     show_audio: typeof raw.show_audio === 'boolean' ? raw.show_audio : DEFAULTS.show_audio,
     accent:
       typeof raw.accent === 'string' && /^#[0-9a-f]{6}$/i.test(raw.accent) ? raw.accent : null,
+    last_dict: typeof raw.last_dict === 'string' && raw.last_dict ? raw.last_dict : null,
   }
 }
 
@@ -72,6 +77,7 @@ function snapshot(): Settings {
     previews: settings.previews,
     show_audio: settings.show_audio,
     accent: settings.accent,
+    last_dict: settings.last_dict,
   }
 }
 
