@@ -641,9 +641,9 @@ mdict_svr import --mdx <FILE|DIR> [-o <OUT|OUTDIR>] [--mdd <FILE>] [--res-out <O
 | Flag | Required | Description |
 | --- | --- | --- |
 | `--mdx <path>` | yes | A `.mdx` file, or a directory scanned recursively for every `.mdx`/`.mdd`. |
-| `-o, --out <path>` | no | Single-file mode: output `.qmd` (default `<source stem>.qmd` beside the source). Directory mode: output **directory** (default the input directory), mirroring source subpaths. |
+| `-o, --out <path>` | no | Single-file mode: output `.qmd` (default `<source stem>.qmd` beside the source); an existing directory, or a path ending in `/`, takes that default file name inside it. Directory mode: output **directory** (default the input directory), mirroring source subpaths. |
 | `--mdd <FILE>` | no | Companion resource file. **Single-file mode only.** |
-| `--res-out <FILE>` | no | Resource output (default `<out stem>.res.qmd`). **Single-file mode only.** Giving it without `--mdd` is an error. |
+| `--res-out <FILE>` | no | Resource output (default `<out stem>.res.qmd`); a directory is accepted as for `-o`. **Single-file mode only.** Giving it without `--mdd` is an error. |
 
 **Directory mode.** Every `*.mdx`/`*.mdd` under the directory is imported, so you
 can convert a folder of dictionaries in one go:

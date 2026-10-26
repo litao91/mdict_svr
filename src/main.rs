@@ -33,9 +33,10 @@ enum Command {
         /// Companion resource file (.mdd). Single-file mode only.
         #[arg(long)]
         mdd: Option<PathBuf>,
-        /// Output .qmd (single-file mode; default: alongside the source). In
-        /// directory mode this is the output directory (default: the input dir),
-        /// mirroring the source subpaths.
+        /// Output .qmd (single-file mode; default: alongside the source). A
+        /// directory is accepted here too and takes the default file name inside
+        /// it. In directory mode this is the output directory (default: the input
+        /// dir), mirroring the source subpaths.
         #[arg(short = 'o', long = "out")]
         out: Option<PathBuf>,
         /// Output for resources (default: <out stem>.res.qmd). Single-file mode only.
@@ -125,15 +126,37 @@ async fn cmd_import(
     }
 
     // Single file: default output is alongside the source, with a .qmd extension.
-    let out = out.unwrap_or_else(|| mdx.with_extension("qmd"));
+    let default_out = mdx.with_extension("qmd");
+    let out = match &out {
+        Some(path) => resolve_out(path, &default_out),
+        None => default_out,
+    };
     import_one_dict(&mdx, &out).await?;
     if let Some(mdd) = mdd {
-        let res_out = res_out.unwrap_or_else(|| default_res_path(&out));
+        let default_res = default_res_path(&out);
+        let res_out = match &res_out {
+            Some(path) => resolve_out(path, &default_res),
+            None => default_res,
+        };
         import_one_res(&mdd, &res_out).await?;
     } else if res_out.is_some() {
         bail!("--res-out given without --mdd");
     }
     Ok(())
+}
+
+/// `--out` and `--res-out` name an output *file* in single-file mode, but
+/// `--out ./data` reads as "put it in ./data", and until this existed that
+/// reached `File::create` on a directory and died as a bare `EISDIR`. An
+/// existing directory (or a path ending in a separator) therefore takes the
+/// default file name inside it.
+fn resolve_out(path: &Path, default_file: &Path) -> PathBuf {
+    let as_dir = path.is_dir() || path.to_string_lossy().ends_with(std::path::MAIN_SEPARATOR);
+    if as_dir {
+        path.join(default_file.file_name().unwrap_or_default())
+    } else {
+        path.to_path_buf()
+    }
 }
 
 /// Import every `.mdx`/`.mdd` under `root`, writing `.qmd` files under `outdir`
@@ -598,4 +621,38 @@ async fn cmd_serve(
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
     println!("\nshutting down");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_out;
+    use std::path::PathBuf;
+
+    #[test]
+    fn out_directory_takes_the_default_file_name() {
+        let dir = std::env::temp_dir();
+        let got = resolve_out(&dir, &PathBuf::from("/src/concise-enhanced.qmd"));
+        assert_eq!(got, dir.join("concise-enhanced.qmd"));
+    }
+
+    #[test]
+    fn out_file_is_used_verbatim() {
+        let got = resolve_out(
+            &PathBuf::from("/tmp/elsewhere.qmd"),
+            &PathBuf::from("/src/concise-enhanced.qmd"),
+        );
+        assert_eq!(got, PathBuf::from("/tmp/elsewhere.qmd"));
+    }
+
+    #[test]
+    fn trailing_separator_means_directory_even_if_absent() {
+        let got = resolve_out(
+            &PathBuf::from("/tmp/mdict_out_dir_that_does_not_exist/"),
+            &PathBuf::from("/src/x.qmd"),
+        );
+        assert_eq!(
+            got,
+            PathBuf::from("/tmp/mdict_out_dir_that_does_not_exist/x.qmd"),
+        );
+    }
 }
