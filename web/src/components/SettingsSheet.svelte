@@ -13,7 +13,7 @@
   } from 'svelte-widgets'
   import { Close } from 'svelte-widgets/icons'
   import { apply_theme_mode, theme } from 'svelte-widgets/theme'
-  import { dicts, display_name } from '../lib/dicts.svelte.js'
+  import { dicts, display_name, ordered } from '../lib/dicts.svelte.js'
   import { FONT_SCALE_MAX, FONT_SCALE_MIN, reset_settings, settings } from '../lib/settings.svelte.js'
   import { clear_history, words } from '../lib/words.svelte.js'
 
@@ -41,7 +41,7 @@
 
   const theme_accent = $derived(theme.mode === 'dark' ? THEME_ACCENTS[1] : THEME_ACCENTS[0])
 
-  const dict_options = $derived(dicts.all.map((d) => d.name))
+  const dict_options = $derived(ordered().map((d) => d.name))
 
   const server_snapshot = $derived({
     dictionaries: dicts.all,
@@ -53,19 +53,21 @@
    * an empty selection means "all of them" — a distinction the widget cannot
    * express. Deselecting everything therefore reads back as "all".
    */
+  /**
+   * The MultiSelect mirrors `settings.enabled_dicts`, but only owns the value
+   * while the sheet is open. Without that gate its write-back effect clobbers
+   * toggles made elsewhere (the sidebar eye buttons) on the next tick.
+   */
   let selected_dicts = $state<string[]>([])
-  let hydrated = false
 
   $effect(() => {
-    if (hydrated) return
-    if (!dicts.loaded) return
-    hydrated = true
+    if (open || !dicts.loaded) return
     selected_dicts =
       settings.enabled_dicts.length === 0 ? [...dict_options] : [...settings.enabled_dicts]
   })
 
   $effect(() => {
-    if (!hydrated) return
+    if (!open || !dicts.loaded) return
     settings.enabled_dicts =
       selected_dicts.length === 0 || selected_dicts.length === dict_options.length
         ? []

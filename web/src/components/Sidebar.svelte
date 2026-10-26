@@ -6,13 +6,23 @@
     Close,
     Dice,
     Download,
+    DragHorizontal,
+    Eye,
+    EyeOff,
     History,
     Notebook,
     Star,
   } from 'svelte-widgets/icons'
   import { toast } from 'svelte-widgets/toast-queue'
   import { fetch_markdown } from '../lib/api.js'
-  import { dicts, display_name } from '../lib/dicts.svelte.js'
+  import {
+    dicts,
+    display_name,
+    move_dict,
+    move_dict_to,
+    ordered,
+    toggle_dict,
+  } from '../lib/dicts.svelte.js'
   import {
     clear_wordlist,
     download_wordlist,
@@ -21,6 +31,7 @@
     wordlist,
     type WordlistFormat,
   } from '../lib/wordlist.svelte.js'
+  import { is_dict_enabled } from '../lib/settings.svelte.js'
   import { clear_history, forget, navigate, random_word, select_dict, words } from '../lib/words.svelte.js'
 
   let open_section = $state<string | null>('recent')
@@ -77,6 +88,34 @@
   }
 
   const total_entries = $derived(dicts.all.reduce((n, d) => n + (d.entries || 0), 0))
+  const ordered_dicts = $derived(ordered())
+
+  // Drag-to-reorder: the grip is the drag handle and also takes ArrowUp/Down so
+  // the order is keyboard-reachable too.
+  let drag_index = $state<number | null>(null)
+  let over_index = $state<number | null>(null)
+
+  function on_drag_start(index: number, event: DragEvent) {
+    drag_index = index
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = 'move'
+      event.dataTransfer.setData('text/plain', String(index))
+    }
+  }
+
+  function on_drop(index: number, event: DragEvent) {
+    event.preventDefault()
+    if (drag_index !== null) move_dict_to(drag_index, index)
+    drag_index = null
+    over_index = null
+  }
+
+  function on_grip_key(index: number, name: string, event: KeyboardEvent) {
+    if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      event.preventDefault()
+      move_dict(name, event.key === 'ArrowUp' ? -1 : 1)
+    }
+  }
 </script>
 
 <aside class="sidebar">
@@ -184,9 +223,35 @@
           </div>
         {/if}
       {:else}
-        <ul class="side-list">
-          {#each dicts.all as d (d.name)}
-            <li class="side-row">
+        <ul class="side-list side-list--dicts">
+          {#each ordered_dicts as d, i (d.name)}
+            {@const on = is_dict_enabled(d.name)}
+            <li
+              class="side-row"
+              class:side-row--dragging={drag_index === i}
+              class:side-row--over={over_index === i && drag_index !== i}
+              ondragover={(e) => {
+                e.preventDefault()
+                over_index = i
+              }}
+              ondrop={(e) => on_drop(i, e)}
+              ondragend={() => {
+                drag_index = null
+                over_index = null
+              }}
+            >
+              <span
+                class="side-grip"
+                title="Drag to reorder, or focus and use ArrowUp/ArrowDown"
+                tabindex="0"
+                role="button"
+                aria-label={`Reorder ${display_name(d.name)}`}
+                draggable="true"
+                ondragstart={(e) => on_drag_start(i, e)}
+                onkeydown={(e) => on_grip_key(i, d.name, e)}
+              >
+                <Icon icon={DragHorizontal} width={11} height={11} />
+              </span>
               <button
                 class="side-link"
                 type="button"
@@ -194,15 +259,27 @@
                 title={d.title || d.name}
                 onclick={() => scope(words.dict === d.name ? null : d.name)}
               >
-                <span class="side-link__label">{display_name(d.name)}</span>
+                <span class="side-link__label" class:side-link__label--off={!on}>
+                  {display_name(d.name)}
+                </span>
                 <span class="side-count">{d.entries.toLocaleString()}</span>
+              </button>
+              <button
+                class="side-drop side-drop--always"
+                type="button"
+                title={on ? `Stop searching ${display_name(d.name)}` : `Search ${display_name(d.name)}`}
+                aria-label={on ? `Disable ${display_name(d.name)}` : `Enable ${display_name(d.name)}`}
+                aria-pressed={on}
+                onclick={() => toggle_dict(d.name)}
+              >
+                <Icon icon={on ? Eye : EyeOff} width={12} height={12} />
               </button>
             </li>
           {/each}
         </ul>
         <p class="side-empty">
-          {dicts.all.length} loaded · {total_entries.toLocaleString()} entries. Click to search one
-          dictionary only.
+          {dicts.all.length} loaded · {total_entries.toLocaleString()} entries. Click a name to
+          search one dictionary only, the eye to switch it off, the grip to reorder.
         </p>
       {/if}
     {/snippet}
@@ -250,6 +327,47 @@
   .side-drop:hover {
     color: var(--accent);
     background: var(--accent-soft);
+  }
+  .side-list--dicts .side-row {
+    gap: 0;
+  }
+  .side-row--dragging {
+    opacity: 0.45;
+  }
+  .side-row--over {
+    box-shadow: inset 0 2px 0 var(--accent);
+  }
+  .side-grip {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 1.1rem;
+    align-self: stretch;
+    color: var(--fg-faint);
+    cursor: grab;
+    opacity: 0;
+    border-radius: 4px;
+  }
+  .side-row:hover .side-grip,
+  .side-grip:focus-visible {
+    opacity: 1;
+  }
+  .side-grip:active {
+    cursor: grabbing;
+  }
+  .side-drop--always {
+    opacity: 0.55;
+  }
+  .side-drop--always:hover {
+    opacity: 1;
+  }
+  .side-drop[aria-pressed='false'] {
+    color: var(--fg-faint);
+  }
+  .side-link__label--off {
+    color: var(--fg-faint);
+    text-decoration: line-through;
+    text-decoration-color: var(--border-strong);
   }
   .side-count {
     flex: none;

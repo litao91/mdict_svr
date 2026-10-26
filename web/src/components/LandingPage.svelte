@@ -2,11 +2,11 @@
   import { Heading, Icon, StatGrid, StatusMessage } from 'svelte-widgets'
   import { Database, Headphones, ImageOff, Notebook } from 'svelte-widgets/icons'
   import WordSearch from './WordSearch.svelte'
-  import { dicts, display_name } from '../lib/dicts.svelte.js'
+  import { dicts, display_name, ordered_enabled } from '../lib/dicts.svelte.js'
   import { navigate, words } from '../lib/words.svelte.js'
   import { is_dict_enabled } from '../lib/settings.svelte.js'
 
-  const enabled = $derived(dicts.all.filter((d) => is_dict_enabled(d.name)))
+  const enabled = $derived(ordered_enabled())
   const total_entries = $derived(enabled.reduce((n, d) => n + (d.entries || 0), 0))
   const with_audio = $derived(enabled.filter((d) => d.has_resources).length)
 

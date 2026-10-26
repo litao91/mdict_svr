@@ -14,6 +14,9 @@ export interface Settings {
   font_scale: number
   /** Dictionary names switched on. Empty means "all of them". */
   enabled_dicts: string[]
+  /** The reader's own ordering of dictionary names; unlisted ones keep the
+      server's order and sort after these. */
+  dict_order: string[]
   /** Hover a cross-reference to preview its definition. */
   previews: boolean
   /** Show the pronunciation audio controls inline. */
@@ -28,6 +31,7 @@ export const FONT_SCALE_MAX = 1.6
 const DEFAULTS: Settings = {
   font_scale: 1,
   enabled_dicts: [],
+  dict_order: [],
   previews: true,
   show_audio: true,
   accent: null,
@@ -48,6 +52,9 @@ function load(): Settings {
     enabled_dicts: Array.isArray(raw.enabled_dicts)
       ? raw.enabled_dicts.filter((d): d is string => typeof d === 'string')
       : [],
+    dict_order: Array.isArray(raw.dict_order)
+      ? raw.dict_order.filter((d): d is string => typeof d === 'string')
+      : [],
     previews: typeof raw.previews === 'boolean' ? raw.previews : DEFAULTS.previews,
     show_audio: typeof raw.show_audio === 'boolean' ? raw.show_audio : DEFAULTS.show_audio,
     accent:
@@ -61,6 +68,7 @@ function snapshot(): Settings {
   return {
     font_scale: settings.font_scale,
     enabled_dicts: [...settings.enabled_dicts],
+    dict_order: [...settings.dict_order],
     previews: settings.previews,
     show_audio: settings.show_audio,
     accent: settings.accent,

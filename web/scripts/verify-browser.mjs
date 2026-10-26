@@ -807,6 +807,80 @@ await wait_entry('OALD9')
     `${await phone.locator('.nav-pane .accordion-trigger').count()} sections`)
   await phone.close()
 }
+// ── 20. dictionary enable/disable and ordering ────────────────────────────
+{
+  await goto_word('apple', 'OALD9')
+  await wait_entry('OALD9')
+  const rows = page.locator('.shell__side .side-list--dicts .side-row')
+  await page.locator('.shell__side .accordion-trigger').filter({ hasText: 'Dictionaries' }).first().click()
+  await page.waitForTimeout(400)
+  const names_before = await rows.locator('.side-link__label').allTextContents()
+  check('the sidebar lists every dictionary in order', names_before.length === 11,
+    `${names_before.length} rows`)
+
+  // switching one off removes it from the lookup
+  const first_name = names_before[0]
+  await rows.nth(0).locator('button[aria-pressed]').click()
+  await page.waitForTimeout(400)
+  await goto_word('apple', 'OALD9')
+  await wait_entry('OALD9')
+  const tabs_off = await page.locator('[role="tab"]').allTextContents()
+  check('a switched-off dictionary leaves the results',
+    !tabs_off.includes(first_name) && tabs_off.length === 10,
+    `off=${first_name}, tabs=${tabs_off.length}`)
+  // and back on
+  await page.locator('.shell__side .accordion-trigger').filter({ hasText: 'Dictionaries' }).first().click()
+  await page.waitForTimeout(300)
+  await rows.nth(0).locator('button[aria-pressed]').click()
+  await page.waitForTimeout(400)
+  await goto_word('apple', 'OALD9')
+  await wait_entry('OALD9')
+  check('switching it back on restores it',
+    (await page.locator('[role="tab"]').allTextContents()).includes(first_name))
+
+  // keyboard reorder persists across a reload
+  await page.locator('.shell__side .accordion-trigger').filter({ hasText: 'Dictionaries' }).first().click()
+  await page.waitForTimeout(300)
+  const grip = rows.nth(0).locator('.side-grip')
+  await grip.focus()
+  await page.keyboard.press('ArrowDown')
+  await page.waitForTimeout(400)
+  const names_after = await rows.locator('.side-link__label').allTextContents()
+  check('ArrowDown on the grip moves a dictionary down',
+    names_after[0] === names_before[1] && names_after[1] === names_before[0],
+    `${names_before[0]} → ${names_after[0]}`)
+  await page.reload({ waitUntil: 'networkidle' })
+  await page.waitForTimeout(1200)
+  await page.locator('.shell__side .accordion-trigger').filter({ hasText: 'Dictionaries' }).first().click()
+  await page.waitForTimeout(400)
+  const names_reloaded = await page
+    .locator('.shell__side .side-list--dicts .side-row .side-link__label')
+    .allTextContents()
+  check('the order survives a reload', names_reloaded[0] === names_after[0],
+    `${names_reloaded[0]}`)
+
+  // drag and drop reorders too
+  const before_drag = names_reloaded
+  await page
+    .locator('.shell__side .side-list--dicts .side-row .side-grip')
+    .first()
+    .dragTo(page.locator('.shell__side .side-list--dicts .side-row').nth(2))
+  await page.waitForTimeout(500)
+  const after_drag = await page
+    .locator('.shell__side .side-list--dicts .side-row .side-link__label')
+    .allTextContents()
+  check('dragging the grip reorders the list',
+    after_drag[2] === before_drag[0] && after_drag.length === before_drag.length,
+    `${before_drag[0]} → position ${after_drag.indexOf(before_drag[0])}`)
+
+  // the tab bar follows the reader's order
+  await goto_word('apple', 'OALD9')
+  await wait_entry('OALD9')
+  const tabs = await page.locator('[role="tab"]').allTextContents()
+  check('the tab order follows the sidebar order', tabs[0] === after_drag[0],
+    `tabs[0]=${tabs[0]} sidebar[0]=${after_drag[0]}`)
+  await shot('19-dict-order')
+}
 
 await browser.close()
 

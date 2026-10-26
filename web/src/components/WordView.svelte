@@ -19,9 +19,9 @@
     fetch_suggest_full,
     type LookupOutcome,
   } from '../lib/api.js'
-  import { dicts, display_name, has_resources, info as dict_info, load_dicts } from '../lib/dicts.svelte.js'
+  import { dicts, display_name, has_resources, info as dict_info, load_dicts, ordered_enabled } from '../lib/dicts.svelte.js'
   import { sanitize_entry, type SanitizedEntry } from '../lib/sanitize.js'
-  import { is_dict_enabled } from '../lib/settings.svelte.js'
+  import { settings } from '../lib/settings.svelte.js'
   import { navigate, select_dict, words } from '../lib/words.svelte.js'
 
   let {
@@ -52,10 +52,12 @@
   let controller: AbortController | null = null
   let request_id = 0
 
+  // Tab order is the reader's order, not the order the fetches happened to
+  // settle in, so reordering the sidebar rearranges open tabs immediately.
   const tab_items = $derived(
-    Object.entries(results)
-      .filter(([, r]) => r.status === 'ok')
-      .map(([name]) => ({ value: name, label: display_name(name) })),
+    ordered_enabled()
+      .filter((d) => results[d.name]?.status === 'ok')
+      .map((d) => ({ value: d.name, label: display_name(d.name) })),
   )
 
   const entry = $derived.by<SanitizedEntry | null>(() => {
@@ -125,7 +127,7 @@
     if (!dicts.loaded) await load_dicts()
     if (id !== request_id) return
 
-    const targets = dicts.all.filter((d) => is_dict_enabled(d.name)).map((d) => d.name)
+    const targets = ordered_enabled().map((d) => d.name)
     const next: Record<string, Result> = {}
     for (const name of targets) next[name] = { status: 'loading' }
     results = next
@@ -178,6 +180,12 @@
 
   $effect(() => {
     const word = words.word
+    // Switching a dictionary off or reordering them must refresh what is on
+    // screen, not just the next lookup, so both are dependencies of the run.
+    const selection = settings.enabled_dicts.join('\u0001')
+    const order = settings.dict_order.join('\u0001')
+    void selection
+    void order
     if (!word) {
       results = {}
       tab = null
