@@ -13,14 +13,17 @@
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+use std::collections::HashMap;
+
 use axum::{
-    extract::{Path as PathParam, State},
+    extract::{Path as PathParam, Query, State},
     http::{header, Uri},
     response::{IntoResponse, Response},
 };
+use serde_json::json;
 
 use crate::error::{Error, Result};
-use crate::server::{serve_resource, AppState};
+use crate::server::{gather_html, serve_resource, AppState};
 
 /// Hashed build output never changes under a given name, so it can be cached
 /// forever; the shell must not be, or a rebuild is invisible without a hard
@@ -82,14 +85,88 @@ pub fn safe_join(root: &Path, rel: &str) -> Option<PathBuf> {
 }
 
 /// `GET /` and `GET /index.html` — the SPA shell.
-pub async fn index(State(st): State<Arc<AppState>>, uri: Uri) -> Response {
+pub async fn index(
+    State(st): State<Arc<AppState>>,
+    uri: Uri,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
     let Some(root) = st.web.as_ref() else {
         return serve_resource(&st, None, uri.path()).await;
     };
     match read(&root.dir().join("index.html")).await {
         // `mime_guess` reports text/html without a charset.
-        Some(bytes) => respond(bytes, "text/html; charset=utf-8", CACHE_NO_CACHE),
+        Some(bytes) => {
+            let html = String::from_utf8_lossy(&bytes);
+            let html = inject_boot_payload(&st, &html, query.get("word"), query.get("dict"));
+            respond(html.into_bytes(), "text/html; charset=utf-8", CACHE_NO_CACHE)
+        }
         None => serve_resource(&st, None, uri.path()).await,
+    }
+}
+
+/// The shell otherwise costs two round trips before the first entry can paint:
+/// `/dicts`, then the lookup. Both answers are already in hand here, so embed
+/// them — the dictionary list always, and the one definition the URL points at.
+/// The client seeds its state from this and starts sanitizing before it has
+/// fetched anything.
+///
+/// Only the named dictionary is embedded, not every match: a definition is
+/// publisher markup that runs to hundreds of kilobytes, and embedding all of
+/// them puts the whole fan-out back on the critical path to painting one tab.
+/// The client asks for the rest in a single combined request while the reader is
+/// already looking at this one.
+fn inject_boot_payload(
+    st: &AppState,
+    html: &str,
+    word: Option<&String>,
+    dict: Option<&String>,
+) -> String {
+    let mut payload = json!({
+        "dictionaries": st
+            .registry
+            .entries
+            .iter()
+            .map(|e| {
+                let m = e.dict.meta();
+                json!({
+                    "name": e.name,
+                    "title": m.title,
+                    "source": m.source,
+                    "creation_date": m.creation_date,
+                    "entries": m.num_keys,
+                    "records": m.num_slots,
+                    "case_sensitive": m.case_sensitive,
+                    "has_resources": e.res.is_some(),
+                })
+            })
+            .collect::<Vec<_>>(),
+        "transcode": st.ffmpeg.is_some(),
+    });
+    if let (Some(word), Some(dict)) = (
+        word.filter(|w| !w.trim().is_empty()),
+        dict.filter(|d| !d.trim().is_empty()),
+    ) {
+        if let Ok(matches) = gather_html(st, word, Some(dict.as_str()), &[]) {
+            payload["word"] = json!(word);
+            payload["entries"] = json!(matches
+                .iter()
+                .map(|(name, html)| (name.clone(), html.clone()))
+                .collect::<HashMap<String, String>>());
+        }
+    }
+    // `<\/` is a legal JSON escape and the only one needed: it stops the
+    // payload from closing its own <script> tag.
+    let body = payload.to_string().replace("</", "<\\/");
+    let tag = format!(r#"<script id="mdict-boot" type="application/json">{body}</script>"#);
+    match html.rfind("</body>") {
+        Some(at) => {
+            let mut out = String::with_capacity(html.len() + tag.len());
+            out.push_str(&html[..at]);
+            out.push_str(&tag);
+            out.push_str(&html[at..]);
+            out
+        }
+        None => html.to_owned(),
     }
 }
 

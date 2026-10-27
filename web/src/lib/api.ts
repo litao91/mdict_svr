@@ -3,10 +3,10 @@
  *
  * Two details of the server shape the design here:
  *
- * - Every request is made **per dictionary** (`?dict=NAME`) rather than once for
- *   all of them, because rewriting a definition's relative asset refs needs to
- *   know which dictionary it came from. It also means tabs can be filled lazily
- *   instead of rendering nine entries of up to 237 KB each up front.
+ * - A definition's relative asset refs can only be rewritten once the dictionary
+ *   it came from is known, so a response always says which dictionary each part
+ *   belongs to — either because one was asked for by name, or because the server
+ *   wrapped each match in a `<section data-dict>`.
  * - A `404` is ambiguous: with `format=html` both "this dictionary does not have
  *   the word" and "unknown dictionary" are 404s. The first is a normal, silent
  *   miss; the second is a bug. So `ok` is checked *and* the JSON `error` field is
@@ -16,7 +16,8 @@
 export interface DictInfo {
   name: string
   title: string
-  description: string
+  /** Absent from the shell-embedded boot payload; fetched with `/dicts`. */
+  description?: string
   creation_date: string
   source: string
   entries: number
@@ -148,12 +149,53 @@ export async function fetch_nearby(
   }
 }
 
+/**
+ * One dictionary's answer for one word, remembered so the reading loop does not
+ * pay a round trip for a word it has already seen: Back and Forward, a tab the
+ * reader returns to, and the neighbours fetched ahead while they read.
+ *
+ * Bounded by bytes, not entries — a definition runs to hundreds of kilobytes of
+ * publisher markup, so a count says nothing about what this costs. Oldest first
+ * out; `Map` iterates in insertion order and a hit re-inserts, which makes this
+ * an LRU without a second data structure.
+ */
+const LOOKUP_CACHE_BYTES = 12 << 20
+const lookups = new Map<string, LookupOutcome>()
+let lookup_bytes = 0
+
+const size_of = (outcome: LookupOutcome) =>
+  outcome.kind === 'ok' ? outcome.html.length * 2 : 64
+
+export function remember_lookup(word: string, dict: string, outcome: LookupOutcome): void {
+  // A failure is worth retrying, so it is the one thing not worth keeping.
+  if (outcome.kind === 'error') return
+  const key = `${word}\u0000${dict}`
+  const cost = size_of(outcome)
+  const previous = lookups.get(key)
+  if (previous) lookup_bytes -= size_of(previous)
+  lookups.delete(key)
+  lookups.set(key, outcome)
+  lookup_bytes += cost
+  for (const oldest of lookups.keys()) {
+    if (lookup_bytes <= LOOKUP_CACHE_BYTES) break
+    const gone = lookups.get(oldest)
+    if (gone) lookup_bytes -= size_of(gone)
+    lookups.delete(oldest)
+  }
+}
+
+export function cached_lookup(word: string, dict: string): LookupOutcome | undefined {
+  return lookups.get(`${word}\u0000${dict}`)
+}
+
 /** `GET /lookup` for one dictionary, as HTML. */
 export async function fetch_entry(
   word: string,
   dict: string,
   signal?: AbortSignal,
 ): Promise<LookupOutcome> {
+  const hit = cached_lookup(word, dict)
+  if (hit) return hit
   const params = new URLSearchParams({ word, dict, format: 'html' })
   let res: Response
   try {
@@ -162,14 +204,81 @@ export async function fetch_entry(
     if ((err as Error)?.name === 'AbortError') throw err
     return { kind: 'error', dict, message: 'server unreachable' }
   }
+  let outcome: LookupOutcome
   if (res.ok) {
-    return { kind: 'ok', dict, html: await res.text() }
+    outcome = { kind: 'ok', dict, html: await res.text() }
+  } else {
+    const message = await error_body(res)
+    // "not found" is the normal case for a word this dictionary lacks.
+    outcome = message === 'not found' ? { kind: 'miss', dict } : { kind: 'error', dict, message }
+  }
+  remember_lookup(word, dict, outcome)
+  return outcome
+}
+
+/**
+ * Warm the cache for a word the reader is about to open. Deliberately without an
+ * abort signal: it belongs to no navigation, so leaving the page it was started
+ * from must not cancel it.
+ */
+export function prefetch_entry(word: string, dict: string): void {
+  if (!word || !dict || cached_lookup(word, dict)) return
+  void fetch_entry(word, dict).catch(() => {})
+}
+
+/**
+ * Split a multi-dictionary response into per-dictionary HTML. The server wraps
+ * each match in `<section class="dict" data-dict="NAME">` (always, when the
+ * request carries `except`), which is what makes one request serve the whole
+ * tab bar.
+ */
+export function split_sections(html: string): Map<string, string> {
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  const out = new Map<string, string>()
+  for (const section of doc.querySelectorAll('section.dict[data-dict]')) {
+    section.querySelector(':scope > h3')?.remove()
+    const name = section.getAttribute('data-dict')
+    if (name) out.set(name, section.innerHTML)
+  }
+  return out
+}
+
+export type CombinedOutcome =
+  | { kind: 'ok'; sections: Map<string, string> }
+  | { kind: 'miss' }
+  | { kind: 'error'; message: string }
+
+/**
+ * Every dictionary except the ones named, in a single request. One request per
+ * dictionary queues across HTTP/1.1's six sockets, so the second wave waits a
+ * full round trip for nothing; this and the preferred dictionary's own request
+ * are the whole fan-out.
+ */
+export async function fetch_entries_except(
+  word: string,
+  except: readonly string[],
+  signal?: AbortSignal,
+): Promise<CombinedOutcome> {
+  const params = new URLSearchParams({ word, format: 'html' })
+  for (const name of except) params.append('except', name)
+  let res: Response
+  try {
+    res = await fetch(`/lookup?${params}`, { signal })
+  } catch (err) {
+    if ((err as Error)?.name === 'AbortError') throw err
+    return { kind: 'error', message: 'server unreachable' }
+  }
+  if (res.ok) {
+    const sections = split_sections(await res.text())
+    // One combined answer is every dictionary's answer, so it warms the same
+    // cache a single lookup would.
+    for (const [dict, html] of sections) {
+      remember_lookup(word, dict, { kind: 'ok', dict, html })
+    }
+    return { kind: 'ok', sections }
   }
   const message = await error_body(res)
-  // "not found" is the normal case for a word this dictionary lacks.
-  return message === 'not found'
-    ? { kind: 'miss', dict }
-    : { kind: 'error', dict, message }
+  return message === 'not found' ? { kind: 'miss' } : { kind: 'error', message }
 }
 
 /** `GET /lookup` as Markdown — used by the copy button and hover previews. */

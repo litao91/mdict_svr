@@ -7,6 +7,8 @@
  */
 
 import { fetch_dicts, type DictInfo } from './api.js'
+import { boot } from './boot.js'
+
 import { is_dict_enabled, settings } from './settings.svelte.js'
 
 interface DictsState {
@@ -25,6 +27,13 @@ export const dicts = $state<DictsState>({
   loaded: false,
   transcode: false,
 })
+
+// The shell carries the dictionary list, so boot needs no round trip at all.
+if (boot) {
+  dicts.all = boot.dictionaries
+  dicts.transcode = boot.transcode
+  dicts.loaded = true
+}
 
 let inflight: Promise<void> | null = null
 

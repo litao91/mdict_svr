@@ -114,6 +114,12 @@ given:
 * several matches → they are concatenated, labeled per dictionary (`<section
   data-dict="name">` in HTML, `# name` in Markdown).
 
+`except=<name>` leaves a dictionary out of an all-dictionary search, and may be
+repeated. The web UI uses it to ask for the dictionary it wants to paint first on
+its own, and everything else in a single follow-up request, instead of one
+request per dictionary; a response to a request carrying `except` is always
+wrapped per dictionary, so one match is still attributable.
+
 Either way the responding dictionary name(s) are in the `X-Dictionary` response
 header. `format` may also be implied by `Accept: text/markdown` or
 `Accept: application/json`. Markdown is produced by converting the stored HTML at
@@ -164,6 +170,15 @@ to WAV on first request and served immutable from cache — at the original URL,
 so nothing client-side has to know. Without a decoder the player explains the
 codec and offers the file as a download instead of failing silently.
 
+Boot is one request. The shell carries the dictionary list and the definition the
+URL named, so a shared link paints without waiting on a socket, and the remaining
+dictionaries arrive in a single combined response (`except=`) instead of one
+request each. Lookups are remembered for the life of the page and the two
+alphabetical neighbours are fetched behind the entry already on screen, which is
+what makes Next and Back feel instant. The overlays — settings, palette, lightbox
+— are separate chunks, warmed once the browser goes idle so they sit off the
+critical path without opening on a wait.
+
 ```bash
 cd web
 npm install
@@ -172,6 +187,7 @@ npm run build        # → web/dist
 npm test             # vitest + jsdom unit tests
 npm run check        # svelte-check
 npm run test:browser # headless-Chromium pass; needs a running `serve --web`
+npm run perf         # the same, over an emulated connection, as a waterfall
 ```
 
 Serve the build from the Rust binary so one command gives one origin:

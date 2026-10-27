@@ -815,8 +815,11 @@ await wait_entry('OALD9')
   await page.locator('.shell__side .accordion-trigger').filter({ hasText: 'Dictionaries' }).first().click()
   await page.waitForTimeout(400)
   const names_before = await rows.locator('.side-link__label').allTextContents()
-  check('the sidebar lists every dictionary in order', names_before.length === 11,
-    `${names_before.length} rows`)
+  // Derived, not a literal: the count is however many stores are in `./data`.
+  const loaded = await fetch(`${BASE}/dicts`).then((r) => r.json())
+  check('the sidebar lists every dictionary in order',
+    names_before.length === loaded.dictionaries.length,
+    `${names_before.length} rows, ${loaded.dictionaries.length} loaded`)
 
   // switching one off removes it from the lookup
   const first_name = names_before[0]
@@ -826,8 +829,8 @@ await wait_entry('OALD9')
   await wait_entry('OALD9')
   const tabs_off = await page.locator('[role="tab"]').allTextContents()
   check('a switched-off dictionary leaves the results',
-    !tabs_off.includes(first_name) && tabs_off.length === 10,
-    `off=${first_name}, tabs=${tabs_off.length}`)
+    !tabs_off.includes(first_name) && tabs_off.length === names_before.length - 1,
+    `off=${first_name}, tabs=${tabs_off.length} of ${names_before.length}`)
   // and back on
   await page.locator('.shell__side .accordion-trigger').filter({ hasText: 'Dictionaries' }).first().click()
   await page.waitForTimeout(300)
@@ -966,6 +969,67 @@ await wait_entry('OALD9')
     (await p4.locator('[role="tab"][aria-selected="true"]').getAttribute('data-value')) === first_tab,
     first_tab ?? '')
   await blank.close()
+}
+
+// ── 22. the reading loop's round trips ─────────────────────────────────────
+{
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 960 } })
+  const p = await ctx.newPage()
+  const lookups = []
+  p.on('request', (r) => {
+    if (r.url().includes('/lookup')) lookups.push(new URL(r.url()).searchParams)
+  })
+  /** Requests that ask for one word in one dictionary — the slow, avoidable kind. */
+  const per_dict = (word) =>
+    lookups.filter((q) => q.get('word') === word && q.has('dict')).map((q) => q.get('dict'))
+
+  // The shell carries the definition the URL named, so first paint does not
+  // wait for a socket at all.
+  await p.goto(`${BASE}/?word=hand&dict=OALD9`, { waitUntil: 'domcontentloaded' })
+  await p.waitForSelector('.entry[data-dict="OALD9"]', { timeout: 25000 })
+  const marks = await p.evaluate(() => {
+    const at = (n) => performance.getEntriesByName(n).at(-1)?.startTime ?? -1
+    return { start: at('mdict:fetch-start'), first: at('mdict:first-result') }
+  })
+  check(
+    'the entry the URL names paints without a round trip',
+    marks.start >= 0 && marks.first - marks.start <= 2 && per_dict('hand').length === 0,
+    `fetch@${Math.round(marks.start)}ms first@${Math.round(marks.first)}ms, ${lookups.length} lookups`,
+  )
+
+  // Both neighbours are fetched behind the entry that is already on screen.
+  await p.waitForTimeout(2500)
+  const ahead = lookups.filter((q) => q.get('word') !== 'hand')
+  check('the words either side are fetched ahead of the reader', ahead.length >= 2,
+    ahead.map((q) => q.get('word')).join(' '))
+
+  // Next is answered from memory; only the other dictionaries' tabs are asked for.
+  lookups.length = 0
+  const next = p.locator('.word-nav .next a')
+  const next_word = (await next.textContent()) ?? ''
+  await next.click()
+  await p.waitForFunction(
+    (w) => document.querySelector('.word-head__title')?.textContent === w,
+    next_word,
+    { timeout: 20000 },
+  )
+  await p.waitForSelector('.entry', { timeout: 20000 })
+  check('Next opens from memory', per_dict(next_word).length === 0,
+    `${next_word}: asked for ${per_dict(next_word).join(',') || 'nothing'}`)
+
+  // Back has every dictionary for the word already, so it asks for nothing.
+  lookups.length = 0
+  await p.goBack()
+  await p.waitForFunction(
+    () => document.querySelector('.word-head__title')?.textContent === 'hand',
+    null,
+    { timeout: 20000 },
+  )
+  await p.waitForSelector('.entry', { timeout: 20000 })
+  await p.waitForTimeout(600)
+  check('Back asks the server for nothing', lookups.length === 0, `${lookups.length} lookups`)
+
+  await ctx.close()
 }
 
 await browser.close()

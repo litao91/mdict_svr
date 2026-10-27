@@ -178,6 +178,7 @@ Primary lookup. Returns the definition of a word as HTML or Markdown.
 | --- | --- | --- | --- |
 | `word` | **yes** | — | The headword. Percent-encode spaces/punctuation. Blank → `400`. |
 | `dict` | no | *all* | Restrict to one dictionary by name. Unknown name → `404`. Omit to search every dictionary. |
+| `except` | no | *none* | Leave a dictionary out of an all-dictionary search; repeat the parameter to name several. Ignored when `dict` is given. Its presence always wraps the response per dictionary, so a single match stays attributable. |
 | `format` | no | `html` | `html`, `md`/`markdown`/`text/markdown`/`text/x-markdown` for Markdown, or `json`/`application/json`. Also inferred from `Accept`. |
 
 **Responses**
@@ -597,7 +598,9 @@ passed to `serve`:
 
 1. **No match** → `404 { "error": "not found", "word": ... }`.
 2. **Exactly one dictionary matches** → its definition is returned as-is (no
-   wrapper), and `X-Dictionary` names it.
+   wrapper), and `X-Dictionary` names it. With any `except` parameter the match
+   is wrapped anyway, so a client that split the search across two requests can
+   always tell which dictionary answered.
 3. **Several dictionaries match** → results are concatenated, each labeled:
    - HTML: `<section class="dict" data-dict="NAME"><h3>NAME</h3>…</section>`,
      sections joined by `\n<hr/>\n`.

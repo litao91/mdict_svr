@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   import {
     Icon,
     PrevNext,
@@ -14,11 +15,17 @@
   import EntryToolbar from './EntryToolbar.svelte'
   import EntryView from './EntryView.svelte'
   import {
+    cached_lookup,
+    fetch_entries_except,
     fetch_entry,
     fetch_nearby,
     fetch_suggest_full,
+    prefetch_entry,
+    remember_lookup,
+    type CombinedOutcome,
     type LookupOutcome,
   } from '../lib/api.js'
+  import { boot } from '../lib/boot.js'
   import { dicts, display_name, has_resources, info as dict_info, load_dicts, ordered_enabled } from '../lib/dicts.svelte.js'
   import { sanitize_entry, type SanitizedEntry } from '../lib/sanitize.js'
   import { settings } from '../lib/settings.svelte.js'
@@ -59,6 +66,9 @@
   let did_you_mean = $state<string[]>([])
 
   // Memo caches. Plain Maps, not $state: they are never rendered from directly.
+  // Bounded because a session reads hundreds of words and a sanitized entry is
+  // the size of the publisher's markup; a miss only costs one re-sanitize.
+  const ENTRY_CACHE_MAX = 24
   const entry_cache = new Map<string, SanitizedEntry>()
   let controller: AbortController | null = null
   let request_id = 0
@@ -86,8 +96,16 @@
     const key = `${word}\u0000${name}`
     let cached = entry_cache.get(key)
     if (!cached) {
+      const t0 = performance.now()
       cached = sanitize_entry(result.html, name, has_resources(name))
+      // Permanent, cheap: this is the main-thread cost of making publisher
+      // markup safe, and the number people feel on a 237 KB entry.
+      performance.measure('mdict:sanitize', { start: t0, end: performance.now() })
       entry_cache.set(key, cached)
+      if (entry_cache.size > ENTRY_CACHE_MAX) {
+        const oldest = entry_cache.keys().next()
+        if (!oldest.done) entry_cache.delete(oldest.value)
+      }
     }
     return cached
   })
@@ -133,13 +151,96 @@
     return { playable_audio, unsupported_audio }
   })
 
-  /**
-   * Fetch every enabled dictionary in parallel so the tab list is known, but
-   * sanitize only the selected one — a single OxEnCh8 entry is 237 KB of markup
-   * and parsing nine of them would dominate the interaction.
-   */
+  /** Record one dictionary's outcome, keeping the progressive-tab rule. */
+  function apply(name: string, outcome: LookupOutcome, preferred: string) {
+    results[name] =
+      outcome.kind === 'ok'
+        ? { status: 'ok', html: outcome.html }
+        : outcome.kind === 'miss'
+          ? { status: 'miss' }
+          : { status: 'error', message: outcome.message }
+    settled += 1
+    if (settled === 1) performance.mark('mdict:first-result')
+    if (settled === total) performance.mark('mdict:all-settled')
+    // First paint must not wait for the slowest dictionary: show the first
+    // match that lands (preferring the requested one), and let the tab bar
+    // fill in behind it.
+    if (outcome.kind === 'ok') {
+      const shown = tab
+      const shown_ok = shown !== undefined && results[shown]?.status === 'ok'
+      if (!shown_ok && (name === preferred || shown === undefined)) tab = name
+    }
+  }
+
+  function finish(preferred: string) {
+    loading = false
+    const targets = ordered_enabled().map((d) => d.name)
+    const matched = targets.filter((n) => results[n]?.status === 'ok')
+    not_found = matched.length === 0
+    // The URL's dict wins (a shared link names it); otherwise the dictionary
+    // the reader last chose, so a new word opens where they were reading.
+    const wanted = matched.includes(preferred) ? preferred : (matched[0] ?? undefined)
+    tab = wanted
+    // Keep the URL in step with the tab, without adding a history entry.
+    if (wanted && wanted !== words.dict) select_dict(wanted)
+  }
+
+  /** The dictionary first paint waits on, asked for alone so nothing queues behind it. */
+  async function fetch_one(
+    word: string,
+    name: string,
+    preferred: string,
+    signal: AbortSignal,
+    id: number,
+  ) {
+    let outcome: LookupOutcome
+    try {
+      outcome = await fetch_entry(word, name, signal)
+    } catch (err) {
+      if ((err as Error)?.name === 'AbortError' || id !== request_id) return
+      outcome = { kind: 'error', dict: name, message: 'server unreachable' }
+    }
+    if (id !== request_id) return
+    apply(name, outcome, preferred)
+  }
+
+  /** Everything not already in hand, in a single request split by section. */
+  async function fetch_rest(
+    word: string,
+    except: string[],
+    targets: string[],
+    preferred: string,
+    signal: AbortSignal,
+    id: number,
+  ) {
+    let combined: CombinedOutcome
+    try {
+      combined = await fetch_entries_except(word, except, signal)
+    } catch (err) {
+      if ((err as Error)?.name === 'AbortError' || id !== request_id) return
+      combined = { kind: 'error', message: 'server unreachable' }
+    }
+    if (id !== request_id) return
+    for (const name of targets) {
+      if (except.includes(name)) continue
+      const html = combined.kind === 'ok' ? combined.sections.get(name) : undefined
+      const outcome: LookupOutcome =
+        html !== undefined
+          ? { kind: 'ok', dict: name, html }
+          : combined.kind === 'error'
+            ? { kind: 'error', dict: name, message: combined.message }
+            : // The server leaves out a dictionary that does not have the word.
+              { kind: 'miss', dict: name }
+      // `fetch_entries_except` remembers the hits; a miss is worth keeping too,
+      // or coming back to this word asks the server the same question again.
+      if (outcome.kind === 'miss') remember_lookup(word, name, outcome)
+      apply(name, outcome, preferred)
+    }
+  }
+
   async function run(word: string) {
     const preferred = words.dict ?? settings.last_dict ?? ''
+    performance.mark('mdict:fetch-start')
     const id = ++request_id
     controller?.abort()
     const ctrl = new AbortController()
@@ -162,54 +263,63 @@
       return
     }
 
-    await Promise.all(
-      targets.map(async (name) => {
-        let outcome: LookupOutcome
-        try {
-          outcome = await fetch_entry(word, name, ctrl.signal)
-        } catch (err) {
-          if ((err as Error)?.name === 'AbortError') return
-          outcome = { kind: 'error', dict: name, message: 'server unreachable' }
-        }
-        if (id !== request_id) return
-        results[name] =
-          outcome.kind === 'ok'
-            ? { status: 'ok', html: outcome.html }
-            : outcome.kind === 'miss'
-              ? { status: 'miss' }
-              : { status: 'error', message: outcome.message }
-        settled += 1
-        // First paint must not wait for the slowest of N dictionaries: show
-        // the first match that lands (preferring the requested dictionary),
-        // and let the tab bar fill in as the rest settle.
-        if (outcome.kind === 'ok') {
-          const shown = tab
-          const shown_ok = shown !== undefined && results[shown]?.status === 'ok'
-          if (!shown_ok && (name === preferred || shown === undefined)) tab = name
-        }
-      }),
-    )
-    if (id !== request_id) return
+    // Whatever is already in hand paints at once: the entry the shell embedded
+    // for the URL's dictionary, then anything an earlier visit or a prefetch
+    // remembered. A word the reader has just come back to costs no request.
+    const seeded = boot && boot.word === word ? boot.entries : undefined
+    const have: string[] = []
+    for (const name of targets) {
+      const html = seeded?.[name]
+      const from_boot: LookupOutcome | undefined =
+        html !== undefined ? { kind: 'ok', dict: name, html } : undefined
+      const outcome = from_boot ?? cached_lookup(word, name)
+      if (!outcome) continue
+      remember_lookup(word, name, outcome)
+      apply(name, outcome, preferred)
+      have.push(name)
+    }
+    const missing = targets.filter((name) => !have.includes(name))
+    if (missing.length === 0) {
+      finish(preferred)
+      return
+    }
 
-    loading = false
-    const matched = targets.filter((n) => results[n]?.status === 'ok')
-    not_found = matched.length === 0
-    // The URL's dict wins (a shared link names it); otherwise the dictionary
-    // the reader last chose, so a new word opens where they were reading.
-    const wanted = matched.includes(preferred) ? preferred : (matched[0] ?? null)
-    tab = wanted
-    // Keep the URL in step with the tab, without adding a history entry.
-    if (wanted && wanted !== words.dict) select_dict(wanted)
+    // First paint waits on one dictionary. If the preferred one is already on
+    // screen there is nothing to wait for and a single combined request covers
+    // the rest; if nothing is on screen, the preferred dictionary — or the
+    // reader's first, with no preference to honour — is asked for alone so a
+    // slow neighbour cannot hold the entry back.
+    const first = have.includes(preferred)
+      ? null
+      : missing.includes(preferred)
+        ? preferred
+        : missing[0]!
+    const jobs: Promise<void>[] = []
+    if (first) jobs.push(fetch_one(word, first, preferred, ctrl.signal, id))
+    if (missing.some((name) => name !== first)) {
+      jobs.push(
+        fetch_rest(
+          word,
+          first ? [...have, first] : have,
+          targets,
+          preferred,
+          ctrl.signal,
+          id,
+        ),
+      )
+    }
+    await Promise.all(jobs)
+    if (id !== request_id) return
+    finish(preferred)
   }
 
   $effect(() => {
     const word = words.word
     // Switching a dictionary off or reordering them must refresh what is on
-    // screen, not just the next lookup, so both are dependencies of the run.
-    const selection = settings.enabled_dicts.join('\u0001')
-    const order = settings.dict_order.join('\u0001')
-    void selection
-    void order
+    // screen, not just the next lookup, so both are read here purely to join
+    // this effect's dependency set.
+    void settings.enabled_dicts.join('\u0001')
+    void settings.dict_order.join('\u0001')
     if (!word) {
       results = {}
       results_word = ''
@@ -223,7 +333,13 @@
     }
     results_word = word
     loading = true
-    void run(word)
+    // `run` reads the very state it writes — `tab`, `loading`, `results`, and
+    // `words.dict` through `select_dict`. When the shell seeds every entry it
+    // runs to completion without awaiting, so all of that happens inside this
+    // effect's tracking scope and each write re-invalidates it: an endless
+    // lookup/nearby cycle. Untracked, its only dependencies stay the ones the
+    // effect reads itself.
+    untrack(() => void run(word))
   })
 
   // The immediate neighbours come straight from the dictionary's sorted index,
@@ -238,8 +354,9 @@
   $effect(() => {
     const word = words.word
     const name = tab
-    if (!word || !name) {
-      nearby = null
+    // Only once the fan-out has settled: fetching for a tab that the next
+    // settled result replaces wastes a round trip on every lookup.
+    if (!word || !name || loading) {
       return
     }
     let cancelled = false
@@ -248,6 +365,14 @@
         if (cancelled) return
         nearby = found ? { prev: found.prev, next: found.next } : null
         nearby_word = word
+        // Reading is sequential, and the two words either side of this one are
+        // known the moment the index is asked. Fetching them now, behind the
+        // entry that is already on screen, is what makes Next feel instant.
+        if (found) {
+          for (const neighbour of [found.prev.at(-1), found.next[0]]) {
+            if (neighbour) prefetch_entry(neighbour, name)
+          }
+        }
       })
       .catch(() => {
         if (!cancelled) {

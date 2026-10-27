@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetch_dicts, fetch_entry, fetch_suggest } from '../api.js'
+import { cached_lookup, fetch_dicts, fetch_entries_except, fetch_entry, fetch_suggest } from '../api.js'
 
 function stub_fetch(respond: (url: string) => Partial<Response> & { body_text?: string }) {
   const spy = vi.fn(async (input: RequestInfo | URL) => {
@@ -14,6 +14,8 @@ function stub_fetch(respond: (url: string) => Partial<Response> & { body_text?: 
 afterEach(() => vi.unstubAllGlobals())
 
 describe('fetch_entry', () => {
+  // Every test here uses its own word: a successful lookup is remembered for the
+  // life of the module, so a repeated one would never reach `fetch`.
   it('returns the html on success', async () => {
     stub_fetch(() => ({ status: 200, body_text: '<div class="entry">apple</div>' }))
     const out = await fetch_entry('apple', 'OALD9')
@@ -35,6 +37,17 @@ describe('fetch_entry', () => {
     if (out.kind === 'error') expect(out.message).toContain('unknown dictionary')
   })
 
+  it('answers a repeated lookup from memory', async () => {
+    const spy = stub_fetch(() => ({ status: 200, body_text: '<div class="entry">pear</div>' }))
+    await fetch_entry('pear', 'OALD9')
+    expect(await fetch_entry('pear', 'OALD9')).toEqual({
+      kind: 'ok',
+      dict: 'OALD9',
+      html: '<div class="entry">pear</div>',
+    })
+    expect(spy).toHaveBeenCalledTimes(1)
+  })
+
   it('reports an unreachable server as an error, not a miss', async () => {
     vi.stubGlobal(
       'fetch',
@@ -42,8 +55,23 @@ describe('fetch_entry', () => {
         throw new TypeError('Failed to fetch')
       }),
     )
-    const out = await fetch_entry('apple', 'OALD9')
+    const out = await fetch_entry('durian', 'OALD9')
     expect(out).toEqual({ kind: 'error', dict: 'OALD9', message: 'server unreachable' })
+  })
+
+  it('retries a failure rather than remembering it', async () => {
+    let calls = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        calls += 1
+        if (calls === 1) throw new TypeError('Failed to fetch')
+        return new Response('<div class="entry">plum</div>', { status: 200 })
+      }),
+    )
+    expect((await fetch_entry('plum', 'OALD9')).kind).toBe('error')
+    expect((await fetch_entry('plum', 'OALD9')).kind).toBe('ok')
+    expect(calls).toBe(2)
   })
 
   it('rethrows aborts so an in-flight lookup can be cancelled', async () => {
@@ -53,8 +81,33 @@ describe('fetch_entry', () => {
         throw Object.assign(new Error('aborted'), { name: 'AbortError' })
       }),
     )
-    await expect(fetch_entry('apple', 'OALD9', new AbortController().signal)).rejects.toMatchObject({
+    await expect(
+      fetch_entry('rambutan', 'OALD9', new AbortController().signal),
+    ).rejects.toMatchObject({
       name: 'AbortError',
+    })
+  })
+})
+
+describe('fetch_entries_except', () => {
+  it('names every dictionary to leave out, and splits what comes back', async () => {
+    const spy = stub_fetch(() => ({
+      status: 200,
+      body_text:
+        '<section class="dict" data-dict="B"><h3>B</h3><p>b</p></section>\n<hr/>\n' +
+        '<section class="dict" data-dict="C"><h3>C</h3><p>c</p></section>',
+    }))
+    const out = await fetch_entries_except('quince', ['A', 'B'])
+    const url = new URL(String(spy.mock.calls[0]![0]), 'http://localhost')
+    expect(url.searchParams.getAll('except')).toEqual(['A', 'B'])
+    if (out.kind !== 'ok') throw new Error(`expected sections, got ${out.kind}`)
+    expect([...out.sections.keys()]).toEqual(['B', 'C'])
+    expect(out.sections.get('B')).toBe('<p>b</p>')
+    // A combined answer warms the same per-dictionary memory a single one does.
+    expect(cached_lookup('quince', 'C')).toEqual({
+      kind: 'ok',
+      dict: 'C',
+      html: '<p>c</p>',
     })
   })
 })

@@ -100,6 +100,22 @@ pub struct LookupParams {
     pub dict: Option<String>,
 }
 
+/// Every `except` parameter, in the order given. Dictionaries to leave out of a
+/// combined lookup, so a client can fetch the headword from its preferred
+/// dictionary first (fast first paint) and everything it does not already have in
+/// a single follow-up request instead of one request per dictionary.
+///
+/// Read from the raw pairs rather than `LookupParams`: `serde_urlencoded` has no
+/// representation for a repeated key, so a `Vec` field would reject the very
+/// form this exists to accept.
+fn except_list(pairs: &[(String, String)]) -> Vec<String> {
+    pairs
+        .iter()
+        .filter(|(key, _)| key == "except")
+        .map(|(_, value)| value.clone())
+        .collect()
+}
+
 pub fn router(state: Arc<AppState>) -> Router {
     let router = Router::new()
         .route("/health", get(health))
@@ -244,15 +260,40 @@ fn redirect_to_ui(word: &str, dict: Option<&str>) -> Response {
 /// `<base href="/">` is injected into the response and the fallback route serves
 /// them from the resource store.
 fn rewrite_urls(html: &str, dict: &str) -> String {
-    html.replace("sound://", &format!("/res/{dict}/"))
-        .replace("file://", &format!("/res/{dict}/"))
-        .replace("entry://", "/lookup?word=")
+    // One scan and one allocation. Three chained `replace()`s each copied the
+    // whole record, and records run to 237 KB.
+    const SCHEMES: [&str; 3] = ["sound://", "file://", "entry://"];
+    if !SCHEMES.iter().any(|scheme| html.contains(scheme)) {
+        return html.to_owned();
+    }
+    let res_prefix = format!("/res/{dict}/");
+    let mut out = String::with_capacity(html.len() + 64);
+    let mut rest = html;
+    loop {
+        let next = SCHEMES
+            .iter()
+            .filter_map(|scheme| rest.find(scheme).map(|at| (at, scheme)))
+            .min_by_key(|(at, _)| *at);
+        let Some((at, scheme)) = next else {
+            out.push_str(rest);
+            return out;
+        };
+        out.push_str(&rest[..at]);
+        let replacement = if *scheme == "entry://" { "/lookup?word=" } else { &res_prefix };
+        out.push_str(replacement);
+        rest = &rest[at + scheme.len()..];
+    }
 }
 
 /// Collect the raw HTML for `word` from the selected dictionary (or all of them).
 /// Returns `(dict_name, html)` pairs in registry order, with URLs rewritten for
 /// that dictionary.
-fn gather_html(st: &AppState, word: &str, dict: Option<&str>) -> Result<Vec<(String, String)>, Response> {
+pub(crate) fn gather_html(
+    st: &AppState,
+    word: &str,
+    dict: Option<&str>,
+    except: &[String],
+) -> Result<Vec<(String, String)>, Response> {
     let entries: Vec<&DictEntry> = match dict {
         Some(name) => match st.registry.get(name) {
             Some(e) => vec![e],
@@ -264,7 +305,12 @@ fn gather_html(st: &AppState, word: &str, dict: Option<&str>) -> Result<Vec<(Str
                     .into_response())
             }
         },
-        None => st.registry.entries.iter().collect(),
+        None => st
+            .registry
+            .entries
+            .iter()
+            .filter(|e| !except.contains(&e.name))
+            .collect(),
     };
 
     let mut out = Vec::new();
@@ -283,8 +329,14 @@ fn gather_html(st: &AppState, word: &str, dict: Option<&str>) -> Result<Vec<(Str
     Ok(out)
 }
 
-async fn respond_definition(st: &Arc<AppState>, word: &str, dict: Option<&str>, format: Format) -> Response {
-    let matches = match gather_html(st, word, dict) {
+async fn respond_definition(
+    st: &Arc<AppState>,
+    word: &str,
+    dict: Option<&str>,
+    except: &[String],
+    format: Format,
+) -> Response {
+    let matches = match gather_html(st, word, dict, except) {
         Ok(m) => m,
         Err(resp) => return resp,
     };
@@ -299,7 +351,8 @@ async fn respond_definition(st: &Arc<AppState>, word: &str, dict: Option<&str>, 
     let names: Vec<&str> = matches.iter().map(|(n, _)| n.as_str()).collect();
     let xdict = names.join(",");
     let xdict_header = header::HeaderName::from_static("x-dictionary");
-    let multi = matches.len() > 1;
+    // With `except` the client splits the body by section, so always wrap.
+    let multi = matches.len() > 1 || !except.is_empty();
 
     // The combined HTML body, identical for the `html` and `json` formats:
     // <base href="/"> makes the definition's relative asset refs (e.g.
@@ -409,6 +462,7 @@ async fn respond_definition(st: &Arc<AppState>, word: &str, dict: Option<&str>, 
 async fn lookup(
     State(st): State<Arc<AppState>>,
     Query(q): Query<LookupParams>,
+    Query(pairs): Query<Vec<(String, String)>>,
     headers: HeaderMap,
 ) -> Response {
     if st.registry.is_empty() {
@@ -428,13 +482,14 @@ async fn lookup(
         return redirect_to_ui(&word, q.dict.as_deref());
     }
     let format = parse_format(q.format.as_deref(), &headers);
-    respond_definition(&st, &word, q.dict.as_deref(), format).await
+    respond_definition(&st, &word, q.dict.as_deref(), &except_list(&pairs), format).await
 }
 
 async fn lookup_path(
     State(st): State<Arc<AppState>>,
     Path(word): Path<String>,
     Query(q): Query<LookupParams>,
+    Query(pairs): Query<Vec<(String, String)>>,
     headers: HeaderMap,
 ) -> Response {
     if st.registry.is_empty() {
@@ -444,7 +499,7 @@ async fn lookup_path(
         return redirect_to_ui(&word, q.dict.as_deref());
     }
     let format = parse_format(q.format.as_deref(), &headers);
-    respond_definition(&st, &word, q.dict.as_deref(), format).await
+    respond_definition(&st, &word, q.dict.as_deref(), &except_list(&pairs), format).await
 }
 
 const DEFAULT_SUGGEST_LIMIT: usize = 20;
@@ -1046,7 +1101,22 @@ fn gz_response(mut parts: axum::http::response::Parts, gz: Vec<u8>) -> Response 
 
 #[cfg(test)]
 mod tests {
-    use super::{gz_encode, is_compressible, parse_format, rewrite_urls, Format};
+    use super::{except_list, gz_encode, is_compressible, parse_format, rewrite_urls, Format};
+
+    #[test]
+    fn except_is_read_in_order_and_only_from_its_own_key() {
+        let pairs = vec![
+            ("word".to_owned(), "hand".to_owned()),
+            ("except".to_owned(), "OALD9".to_owned()),
+            ("format".to_owned(), "html".to_owned()),
+            ("except".to_owned(), "Collins COBUILD".to_owned()),
+        ];
+        assert_eq!(except_list(&pairs), ["OALD9", "Collins COBUILD"]);
+        assert!(except_list(&[]).is_empty());
+        // A name that merely contains the key is not an exclusion.
+        let near = vec![("excepth".to_owned(), "x".to_owned())];
+        assert!(except_list(&near).is_empty());
+    }
 
     #[test]
     fn gzip_round_trips() {

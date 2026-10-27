@@ -88,6 +88,15 @@ serve-verify: build
     [ -x "{{ffmpeg}}" ] && args+=(--ffmpeg "{{ffmpeg}}")
     ./target/debug/mdict_svr serve "${args[@]}"
 
+# The same, optimised. Measure against this one: the debug binary spends five
+# times as long in a lookup, which reads as a slow network rather than a slow
+# build.
+serve-verify-release: release
+    #!/usr/bin/env bash
+    args=(--db {{data}} --res Sound={{data}}/Sound_us_uk.res.qmd --web web/dist --addr {{addr}})
+    [ -x "{{ffmpeg}}" ] && args+=(--ffmpeg "{{ffmpeg}}")
+    ./target/release/mdict_svr serve "${args[@]}"
+
 # ── web frontend ────────────────────────────────────────────────────────────
 
 # Install the frontend dependencies
@@ -113,6 +122,10 @@ web-check:
 # Headless-Chromium end-to-end pass; needs a running `just serve-verify`
 web-test-browser:
     cd web && {{npm}} run test:browser
+
+# Throttled waterfall and reading-loop timings; needs a running server
+web-perf:
+    cd web && {{npm}} run perf
 
 # ── everything ──────────────────────────────────────────────────────────────
 
